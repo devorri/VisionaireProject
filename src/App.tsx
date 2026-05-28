@@ -5,7 +5,6 @@ import {
   Crop as CropIcon,
   Download,
   Film,
-  KeyRound,
   LoaderCircle,
   Pentagon,
   Play,
@@ -1299,7 +1298,7 @@ function App() {
   const [projectId, setProjectId] = useState<number | null>(null)
   const [task, setTask] = useState<WebOdmTask | null>(null)
   const [message, setMessage] = useState('Ready')
-  const [connection, setConnection] = useState<Connection>({
+  const [connection] = useState<Connection>({
     baseUrl: '/webodm',
     username: 'admin',
     password: '',
@@ -1574,71 +1573,6 @@ function App() {
     },
     [apiFetch],
   )
-
-  const handleSubmitToWebOdm = useCallback(async () => {
-    if (frames.length < 2) {
-      setMessage('Extract at least two frames first.')
-      return
-    }
-    if (!connection.username) {
-      setMessage('Enter WebODM username.')
-      return
-    }
-    if (requiresPassword && !connection.password) {
-      setMessage('Enter WebODM password.')
-      return
-    }
-
-    setIsSubmitting(true)
-    setTask(null)
-    setProjectId(null)
-    setMessage('Connecting to WebODM')
-
-    try {
-      const authBody = new URLSearchParams()
-      authBody.set('username', connection.username)
-      authBody.set('password', connection.password)
-
-      const authResponse = await apiFetch('/api/token-auth/', {
-        method: 'POST',
-        body: authBody,
-      }, '')
-      const auth = (await authResponse.json()) as { token: string }
-      setToken(auth.token)
-      setMessage('Creating project')
-
-      const projectBody = new URLSearchParams()
-      projectBody.set('name', connection.projectName || 'Visionaire')
-      const projectResponse = await apiFetch('/api/projects/', {
-        method: 'POST',
-        body: projectBody,
-      }, auth.token)
-      const project = (await projectResponse.json()) as { id: number }
-      setProjectId(project.id)
-      setMessage('Uploading frames')
-
-      const taskBody = new FormData()
-      frames.forEach((frame) => {
-        taskBody.append('images', frame.file, frame.file.name)
-      })
-      taskBody.set('name', connection.taskName || videoFile?.name || 'Video reconstruction')
-      taskBody.set('auto_processing_node', 'true')
-      taskBody.set('options', JSON.stringify(qualityOptions[quality].options))
-
-      const taskResponse = await apiFetch(`/api/projects/${project.id}/tasks/`, {
-        method: 'POST',
-        body: taskBody,
-      }, auth.token)
-      const createdTask = (await taskResponse.json()) as WebOdmTask
-      setTask(createdTask)
-      setMessage('Task queued')
-      void pollTask(auth.token, project.id, createdTask.id)
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not submit to WebODM.')
-    } finally {
-      setIsSubmitting(false)
-    }
-  }, [apiFetch, connection, frames, pollTask, quality, requiresPassword, videoFile])
 
   const handleSubmitToGateway = useCallback(async () => {
     if (!videoFile) {
