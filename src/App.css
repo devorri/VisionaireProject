@@ -9,7 +9,7 @@
 }
 
 .topbar {
-  height: 72px;
+  min-height: 92px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -42,8 +42,8 @@
 }
 
 .brand-mark {
-  width: 58px;
-  height: 58px;
+  width: 82px;
+  height: 82px;
   justify-content: center;
   color: var(--ink);
 }
