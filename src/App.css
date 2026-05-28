@@ -42,18 +42,17 @@
 }
 
 .brand-mark {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   justify-content: center;
-  border-radius: 8px;
-  color: #ffffff;
-  background: #14211f;
+  color: var(--ink);
 }
 
 .brand-logo {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  display: block;
 }
 
 .status-pill {
