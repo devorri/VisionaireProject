@@ -89,7 +89,7 @@
 
 .capture-panel,
 .conversion-panel,
-.webodm-panel,
+.reconstruction-panel,
 .job-panel {
   padding: 28px;
 }
@@ -670,7 +670,7 @@ h2 {
   border-bottom: 1px solid var(--line);
 }
 
-.webodm-panel {
+.reconstruction-panel {
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -994,7 +994,7 @@ h2 {
 
   .capture-panel,
   .conversion-panel,
-  .webodm-panel,
+  .reconstruction-panel,
   .frames-strip {
     border-right: 0;
     border-bottom: 1px solid var(--line);
@@ -1017,7 +1017,7 @@ h2 {
 @media (max-width: 560px) {
   .capture-panel,
   .conversion-panel,
-  .webodm-panel,
+  .reconstruction-panel,
   .job-panel {
     padding: 18px;
   }

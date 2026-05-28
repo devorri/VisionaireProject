@@ -5,6 +5,7 @@ import {
   Crop as CropIcon,
   Download,
   Film,
+  KeyRound,
   LoaderCircle,
   Pentagon,
   Play,
@@ -168,7 +169,7 @@ const canUseWebGl = () => {
     const canvas = document.createElement('canvas')
     return Boolean(
       window.WebGLRenderingContext &&
-        (canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl')),
+      (canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl')),
     )
   } catch {
     return false
@@ -180,10 +181,8 @@ const landReference = {
   area: 752.54,
 }
 
-const referenceHalfPerimeter = landReference.perimeter / 2
-const referenceSideDelta = Math.sqrt(Math.max(0, referenceHalfPerimeter ** 2 - 4 * landReference.area))
-const referenceLength = (referenceHalfPerimeter + referenceSideDelta) / 2
-const referenceWidth = (referenceHalfPerimeter - referenceSideDelta) / 2
+/** Meters per model local unit — set when the first GLB is crop-calibrated. */
+let modelCalibrationBaseline: { metersPerLocalUnit: number } | null = null
 
 const polygonSignedArea = (points: CropPoint[]) => {
   if (points.length < 3) return 0
@@ -330,6 +329,7 @@ function ModelViewer({ url }: { url: string }) {
   const dimensionsRef = useRef<THREE.Vector3 | null>(null)
   const scaleFactorRef = useRef(1)
   const isCalibratedRef = useRef(false)
+  const modelDisplayScaleRef = useRef(1)
 
   useEffect(() => {
     measureModeRef.current = measureMode
@@ -365,7 +365,10 @@ function ModelViewer({ url }: { url: string }) {
 
   useEffect(() => {
     if (!cropClosed || cropMetrics.perimeter <= 0) return
-    setScaleFactor(landReference.perimeter / cropMetrics.perimeter)
+    const factor = landReference.perimeter / cropMetrics.perimeter
+    const displayScale = modelDisplayScaleRef.current || 1
+    modelCalibrationBaseline = { metersPerLocalUnit: factor / displayScale }
+    setScaleFactor(factor)
     setIsCalibrated(true)
     setViewerMessage('Land measured in meters')
   }, [cropClosed, cropMetrics.perimeter])
@@ -454,17 +457,18 @@ function ModelViewer({ url }: { url: string }) {
       const lengthValue = Math.max(currentDimensions.x, currentDimensions.y) * factor
       const widthValue = Math.min(currentDimensions.x, currentDimensions.y) * factor
 
+      const unitSuffix = isCalibratedRef.current ? 'm' : 'u'
       setDimensionLabels([
         {
           key: 'length',
           label: 'Long side',
-          value: `${(isCalibratedRef.current ? lengthValue : referenceLength).toFixed(2)} m`,
+          value: `${lengthValue.toFixed(2)} ${unitSuffix}`,
           ...lengthPoint,
         },
         {
           key: 'width',
           label: 'Short side',
-          value: `${(isCalibratedRef.current ? widthValue : referenceWidth).toFixed(2)} m`,
+          value: `${widthValue.toFixed(2)} ${unitSuffix}`,
           ...widthPoint,
         },
       ])
@@ -742,6 +746,15 @@ function ModelViewer({ url }: { url: string }) {
         model.scale.setScalar(scale)
         modelRoot = model
         modelDisplayScale = scale
+        modelDisplayScaleRef.current = scale
+        if (modelCalibrationBaseline) {
+          const factor = modelCalibrationBaseline.metersPerLocalUnit * scale
+          scaleFactorRef.current = factor
+          isCalibratedRef.current = true
+          setScaleFactor(factor)
+          setIsCalibrated(true)
+          setViewerMessage('Using base model calibration')
+        }
         setDimensions(size)
         scene.add(model)
 
@@ -822,12 +835,14 @@ function ModelViewer({ url }: { url: string }) {
   const displayDistance = rawDistance === null ? null : rawDistance * scaleFactor
   const displayCropPerimeter = cropClosed ? landReference.perimeter : 0
   const displayCropArea = cropClosed ? landReference.area : 0
+  const rawLength = dimensions ? Math.max(dimensions.x, dimensions.y) : 0
+  const rawWidth = dimensions ? Math.min(dimensions.x, dimensions.y) : 0
   const landLength = isCalibrated && displayDimensions
     ? Math.max(displayDimensions.x, displayDimensions.y)
-    : referenceLength
+    : rawLength
   const landWidth = isCalibrated && displayDimensions
     ? Math.min(displayDimensions.x, displayDimensions.y)
-    : referenceWidth
+    : rawWidth
 
   const closeCropPolygon = () => {
     if (cropPolygon.length < 3) return
@@ -850,9 +865,11 @@ function ModelViewer({ url }: { url: string }) {
     setCropEnabled(false)
     setCropMode(false)
     setCropMetrics({ perimeter: 0, area: 0 })
-    setScaleFactor(1)
-    setIsCalibrated(false)
-    setViewerMessage('Drag to orbit')
+    if (!modelCalibrationBaseline) {
+      setScaleFactor(1)
+      setIsCalibrated(false)
+    }
+    setViewerMessage(modelCalibrationBaseline ? 'Using base model calibration' : 'Drag to orbit')
   }
 
   return (
@@ -876,19 +893,19 @@ function ModelViewer({ url }: { url: string }) {
         <div className="measurement-grid">
           <label>
             <small>Long side</small>
-            <strong>{landLength.toFixed(2)} {unitLabel}</strong>
+            <strong>{landLength.toFixed(2)} {isCalibrated ? unitLabel : 'u'}</strong>
           </label>
           <label>
             <small>Short side</small>
-            <strong>{landWidth.toFixed(2)} {unitLabel}</strong>
+            <strong>{landWidth.toFixed(2)} {isCalibrated ? unitLabel : 'u'}</strong>
           </label>
           <label>
             <small>Perimeter</small>
-            <strong>{landReference.perimeter.toFixed(2)} {unitLabel}</strong>
+            <strong>{isCalibrated ? landReference.perimeter.toFixed(2) : '-'} {isCalibrated ? unitLabel : ''}</strong>
           </label>
           <label>
             <small>Area</small>
-            <strong>{landReference.area.toFixed(2)} {areaUnitLabel}</strong>
+            <strong>{isCalibrated ? landReference.area.toFixed(2) : '-'} {isCalibrated ? areaUnitLabel : ''}</strong>
           </label>
         </div>
         <button
@@ -1285,7 +1302,7 @@ function App() {
   const [extractProgress, setExtractProgress] = useState(0)
   const [isExtracting, setIsExtracting] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [polling, setPolling] = useState(false)
+  const [polling] = useState(false)
   const [isLocalSubmitting, setIsLocalSubmitting] = useState(false)
   const [isLoadingLatestModel, setIsLoadingLatestModel] = useState(false)
   const [isLoadingLocalTasks, setIsLoadingLocalTasks] = useState(false)
@@ -1298,7 +1315,7 @@ function App() {
   const [projectId, setProjectId] = useState<number | null>(null)
   const [task, setTask] = useState<WebOdmTask | null>(null)
   const [message, setMessage] = useState('Ready')
-  const [connection] = useState<Connection>({
+  const [connection, setConnection] = useState<Connection>({
     baseUrl: '/webodm',
     username: 'admin',
     password: '',
@@ -1327,7 +1344,7 @@ function App() {
   const [droneStatus, setDroneStatus] = useState<'idle' | 'scanning' | 'uploading' | 'complete'>('idle')
   const [droneInterval, setDroneInterval] = useState(5)
   const [selectedMission, setSelectedMission] = useState('Mission_2026-05-18_16-41')
-  
+
   // Mock image databases for drone missions with Unsplash satellite/aerial scenery
   const mockMissions: Record<string, { date: string; images: string[] }> = useMemo(() => ({
     'Mission_2026-05-18_16-41': {
@@ -1552,7 +1569,7 @@ function App() {
     async (jwt: string, activeProjectId: number, activeTaskId: number) => {
       setPolling(true)
       try {
-        for (;;) {
+        for (; ;) {
           const response = await apiFetch(
             `/api/projects/${activeProjectId}/tasks/${activeTaskId}/`,
             {},
@@ -1566,13 +1583,78 @@ function App() {
           await delay(5000)
         }
       } catch (error) {
-        setMessage(error instanceof Error ? error.message : 'Could not poll WebODM.')
+        setMessage(error instanceof Error ? error.message : 'Could not poll reconstruction job.')
       } finally {
         setPolling(false)
       }
     },
     [apiFetch],
   )
+
+  const handleSubmitToWebOdm = useCallback(async () => {
+    if (frames.length < 2) {
+      setMessage('Extract at least two frames first.')
+      return
+    }
+    if (!connection.username) {
+      setMessage('Enter processing node username.')
+      return
+    }
+    if (requiresPassword && !connection.password) {
+      setMessage('Enter processing node password.')
+      return
+    }
+
+    setIsSubmitting(true)
+    setTask(null)
+    setProjectId(null)
+    setMessage('Connecting to processing node')
+
+    try {
+      const authBody = new URLSearchParams()
+      authBody.set('username', connection.username)
+      authBody.set('password', connection.password)
+
+      const authResponse = await apiFetch('/api/token-auth/', {
+        method: 'POST',
+        body: authBody,
+      }, '')
+      const auth = (await authResponse.json()) as { token: string }
+      setToken(auth.token)
+      setMessage('Creating project')
+
+      const projectBody = new URLSearchParams()
+      projectBody.set('name', connection.projectName || 'Visionaire')
+      const projectResponse = await apiFetch('/api/projects/', {
+        method: 'POST',
+        body: projectBody,
+      }, auth.token)
+      const project = (await projectResponse.json()) as { id: number }
+      setProjectId(project.id)
+      setMessage('Uploading frames')
+
+      const taskBody = new FormData()
+      frames.forEach((frame) => {
+        taskBody.append('images', frame.file, frame.file.name)
+      })
+      taskBody.set('name', connection.taskName || videoFile?.name || 'Video reconstruction')
+      taskBody.set('auto_processing_node', 'true')
+      taskBody.set('options', JSON.stringify(qualityOptions[quality].options))
+
+      const taskResponse = await apiFetch(`/api/projects/${project.id}/tasks/`, {
+        method: 'POST',
+        body: taskBody,
+      }, auth.token)
+      const createdTask = (await taskResponse.json()) as WebOdmTask
+      setTask(createdTask)
+      setMessage('Task queued')
+      void pollTask(auth.token, project.id, createdTask.id)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not start 3D reconstruction.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [apiFetch, connection, frames, pollTask, quality, requiresPassword, videoFile])
 
   const handleSubmitToGateway = useCallback(async () => {
     if (!videoFile) {
@@ -1714,13 +1796,7 @@ function App() {
     }
   }, [loadLocalModel, refreshLocalTasks])
 
-  const downloadUrl = useCallback(
-    (asset: string) => {
-      if (!projectId || !task || !token) return '#'
-      return `${apiBase}/api/projects/${projectId}/tasks/${task.id}/download/${asset}?jwt=${encodeURIComponent(token)}`
-    },
-    [apiBase, projectId, task, token],
-  )
+
 
   // ==========================================
   // EFFECT FOR GPS FLIGHT TRACKING SIMULATION
@@ -1843,7 +1919,7 @@ function App() {
     const avgLat = (minLat + maxLat) / 2
     const metersPerDegLat = 111320
     const metersPerDegLon = 111320 * Math.cos(avgLat * Math.PI / 180)
-    
+
     // Spacing in degrees
     const stepLat = mapSpacing / metersPerDegLat
     const stepLng = mapSpacing / metersPerDegLon
@@ -1863,7 +1939,7 @@ function App() {
 
     // Generate grid
     const points: Array<{ lat: number; lng: number }> = []
-    
+
     for (let lat = minLat; lat <= maxLat; lat += stepLat) {
       const rowPoints: Array<{ lat: number; lng: number }> = []
       for (let lng = minLng; lng <= maxLng; lng += stepLng) {
@@ -1886,7 +1962,7 @@ function App() {
     // Let's group points by rows roughly matching latitude
     const threshold = stepLat / 2
     const rowsMap = new Map<number, Array<{ lat: number; lng: number }>>()
-    
+
     points.forEach(p => {
       let foundRow = false
       for (const latKey of rowsMap.keys()) {
@@ -1903,7 +1979,7 @@ function App() {
 
     const sortedLatKeys = Array.from(rowsMap.keys()).sort((a: number, b: number) => a - b)
     const sortedSurveyPath: Array<{ lat: number; lng: number }> = []
-    
+
     // Add home at starting point
     sortedSurveyPath.push(homePos)
 
@@ -1946,8 +2022,8 @@ function App() {
           </span>
           <span>Visionaire</span>
         </div>
-        <div className="status-pill" data-state={task?.status === 40 ? 'done' : 'active'}>
-          {polling || isSubmitting || isExtracting ? <LoaderCircle size={16} className="spin" /> : <RadioTower size={16} />}
+        <div className="status-pill" data-state={localModelUrl ? 'done' : 'active'}>
+          {isExtracting || isLocalSubmitting ? <LoaderCircle size={16} className="spin" /> : <RadioTower size={16} />}
           <span>{message}</span>
         </div>
       </header>
@@ -2007,7 +2083,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <p className="eyebrow">Capture</p>
-                  <h1>Video frames to 3D Model</h1>
+                  <h1>Video frames to 3D model</h1>
                 </div>
                 <button className="icon-button" type="button" onClick={() => fileInputRef.current?.click()} title="Choose video">
                   <UploadCloud size={20} />
@@ -2114,38 +2190,82 @@ function App() {
           </section>
 
           <section className="pipeline">
-            <div className="conversion-panel">
+            <div className="reconstruction-panel">
               <div className="panel-heading compact">
                 <div>
-                  <p className="eyebrow">Processing</p>
-                  <h2>3D Model Converter</h2>
+                  <p className="eyebrow">3D reconstruction</p>
+                  <h2>Processing node</h2>
                 </div>
-                <WandSparkles size={20} />
+                <KeyRound size={20} />
               </div>
 
-              <div className="conversion-info">
-                <div className="info-stat">
-                  <span>{frames.length}</span>
-                  <p>frames ready</p>
-                </div>
-                <div className="info-stat">
-                  <span>{(totalFrameSize / 1024 / 1024).toFixed(1)}MB</span>
-                  <p>total size</p>
-                </div>
-                <div className="info-stat">
-                  <span>{quality}</span>
-                  <p>quality mode</p>
-                </div>
+              <div className="form-grid">
+
+                <label className="field">
+                  <span>Username</span>
+                  <input
+                    value={connection.username}
+                    onChange={(event) => setConnection({
+                      ...connection,
+                      username: event.target.value,
+                      password: event.target.value === 'admin' ? '' : connection.password,
+                    })}
+                  />
+                </label>
+                {requiresPassword ? (
+                  <label className="field">
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={connection.password}
+                      onChange={(event) => setConnection({ ...connection, password: event.target.value })}
+                    />
+                  </label>
+                ) : (
+                  <div className="field">
+                    <span>Password</span>
+                    <input
+                      type="text"
+                      value=""
+                      disabled
+                      placeholder="Not required for admin"
+                    />
+                  </div>
+                )}
+                <label className="field">
+                  <span>Project</span>
+                  <input
+                    value={connection.projectName}
+                    onChange={(event) => setConnection({ ...connection, projectName: event.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span>Task</span>
+                  <input
+                    value={connection.taskName}
+                    onChange={(event) => setConnection({ ...connection, taskName: event.target.value })}
+                  />
+                </label>
               </div>
 
               <button
-                className="primary-action"
+                className="primary-action secondary"
+                type="button"
+                onClick={handleSubmitToWebOdm}
+                disabled={frames.length < 2 || isSubmitting || polling}
+              >
+                {isSubmitting || polling ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}
+                <span>Build 3D model</span>
+              </button>
+              <button
+                className="primary-action secondary"
                 type="button"
                 onClick={handleSubmitToGateway}
-                disabled={!videoFile || isLocalSubmitting || frames.length < 2}
+                disabled={!videoFile || isLocalSubmitting}
+                style={{ marginTop: 10 }}
               >
-                {isLocalSubmitting ? <LoaderCircle size={18} className="spin" /> : <Pentagon size={18} />}
-                <span>Generate 3D Model</span>
+                {isLocalSubmitting ? <LoaderCircle size={18} className="spin" /> : <UploadCloud size={18} />}
+                <span>Send to Local NodeODM</span>
               </button>
             </div>
 
@@ -2321,35 +2441,35 @@ function App() {
             </div>
 
             <div className="drone-control-deck">
-              <button 
-                className="drone-btn start" 
-                onClick={handleDroneStart} 
+              <button
+                className="drone-btn start"
+                onClick={handleDroneStart}
                 disabled={droneStatus === 'scanning' || droneStatus === 'uploading'}
               >
                 <Play size={18} />
                 <span>▶ Start Mission</span>
               </button>
-              
-              <button 
-                className="drone-btn stop" 
-                onClick={handleDroneStop} 
+
+              <button
+                className="drone-btn stop"
+                onClick={handleDroneStop}
                 disabled={droneStatus === 'idle'}
               >
                 <Pause size={18} />
                 <span>Aborting Flight</span>
               </button>
 
-              <button 
-                className="drone-btn upload" 
-                onClick={handleDroneUpload} 
+              <button
+                className="drone-btn upload"
+                onClick={handleDroneUpload}
                 disabled={droneStatus !== 'scanning' && droneStatus !== 'complete'}
               >
                 <UploadCloud size={18} />
                 <span>📤 Upload Payload</span>
               </button>
 
-              <button 
-                className="drone-btn delete" 
+              <button
+                className="drone-btn delete"
                 onClick={handleDroneDeleteAll}
               >
                 <Trash2 size={18} />
@@ -2378,8 +2498,8 @@ function App() {
 
             <div className="drone-mission-selector field wide" style={{ marginTop: '20px' }}>
               <span>📁 Select Drone Mission Folder</span>
-              <select 
-                value={selectedMission} 
+              <select
+                value={selectedMission}
                 onChange={(e) => {
                   setSelectedMission(e.target.value)
                   triggerModal("📁 Directory Synced", `Loaded drone capture directory for: ${e.target.value}. Telemetry metadata logs imported.`)
@@ -2391,7 +2511,7 @@ function App() {
                 ))}
               </select>
             </div>
-            
+
             <div className="telemetry-readout" style={{ marginTop: '20px' }}>
               <div className="telemetry-title">📡 Live System Telemetry</div>
               <div className="telemetry-grid">
@@ -2423,7 +2543,7 @@ function App() {
                 <div className="hud-corner top-right">SPD: {droneStatus === 'scanning' ? '5.4 m/s' : '0 m/s'}</div>
                 <div className="hud-corner bottom-left">Msn: {selectedMission}</div>
                 <div className="hud-corner bottom-right">SAT: 18</div>
-                
+
                 {droneStatus === 'scanning' ? (
                   <div className="stream-scanning-overlay">
                     <span className="live-pill">🔴 SCANNING ACTIVE</span>
@@ -2595,7 +2715,7 @@ function App() {
                   {isSimulating ? <Pause size={18} /> : <Navigation size={18} />}
                   <span>{isSimulating ? 'Pause Sim' : '▶ Simulate Flight Path'}</span>
                 </button>
-                
+
                 <button
                   className="sim-action-btn secondary"
                   onClick={() => {
