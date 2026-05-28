@@ -1596,7 +1596,7 @@ function App() {
 
       if (!response.ok) {
         const text = await response.text()
-        throw new Error(text || `WebODM returned ${response.status}.`)
+        throw new Error(text || `Processing engine returned ${response.status}.`)
       }
 
       return response
@@ -1622,7 +1622,7 @@ function App() {
           await delay(5000)
         }
       } catch (error) {
-        setMessage(error instanceof Error ? error.message : 'Could not poll WebODM.')
+        setMessage(error instanceof Error ? error.message : 'Could not poll processing job.')
       } finally {
         setPolling(false)
       }
@@ -1636,18 +1636,18 @@ function App() {
       return
     }
     if (!connection.username) {
-      setMessage('Enter WebODM username.')
+      setMessage('Enter processing username.')
       return
     }
     if (requiresPassword && !connection.password) {
-      setMessage('Enter WebODM password.')
+      setMessage('Enter processing password.')
       return
     }
 
     setIsSubmitting(true)
     setTask(null)
     setProjectId(null)
-    setMessage('Connecting to WebODM')
+    setMessage('Connecting to processing engine')
 
     try {
       const authBody = new URLSearchParams()
@@ -1689,7 +1689,7 @@ function App() {
       setMessage('Task queued')
       void pollTask(auth.token, project.id, createdTask.id)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not submit to WebODM.')
+      setMessage(error instanceof Error ? error.message : 'Could not submit to processing engine.')
     } finally {
       setIsSubmitting(false)
     }
@@ -1753,17 +1753,17 @@ function App() {
 
   const refreshLocalTasks = useCallback(async () => {
     setIsLoadingLocalTasks(true)
-    setMessage('Refreshing NodeODM models')
+    setMessage('Refreshing local 3D models')
 
     try {
       const tasksResponse = await fetch(gatewayPath('/api/nodeodm/tasks'))
-      if (!tasksResponse.ok) throw new Error('Could not list NodeODM tasks.')
+      if (!tasksResponse.ok) throw new Error('Could not list local 3D tasks.')
 
       const tasks = (await tasksResponse.json()) as Array<{ uuid: string; name?: string }>
       const orderedTasks = tasks.filter((item) => item.uuid).slice(-30).reverse()
       if (!orderedTasks.length) {
         setLocalTasks([])
-        throw new Error('No NodeODM task found.')
+        throw new Error('No local 3D task found.')
       }
 
       const taskInfos = await Promise.all(
@@ -1780,10 +1780,10 @@ function App() {
       )
 
       setLocalTasks(taskInfos)
-      setMessage(`Found ${taskInfos.length} NodeODM task${taskInfos.length === 1 ? '' : 's'}`)
+      setMessage(`Found ${taskInfos.length} local 3D task${taskInfos.length === 1 ? '' : 's'}`)
       return taskInfos
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not refresh NodeODM models.')
+      setMessage(error instanceof Error ? error.message : 'Could not refresh local 3D models.')
       return []
     } finally {
       setIsLoadingLocalTasks(false)
@@ -1826,7 +1826,7 @@ function App() {
     try {
       const taskInfos = await refreshLocalTasks()
       const latestComplete = taskInfos.find((item) => isNodeOdmComplete(item.status?.code))
-      if (!latestComplete?.uuid) throw new Error('No completed NodeODM model found yet.')
+      if (!latestComplete?.uuid) throw new Error('No completed local 3D model found yet.')
       await loadLocalModel(latestComplete.uuid, latestComplete)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not load latest model.')
@@ -1915,7 +1915,7 @@ function App() {
       setDroneStatus('complete')
       triggerModal(
         "📤 Payload Upload Success",
-        `Command Sent: UPLOAD\n\nData link established.\nSuccessfully transferred ${mockMissions[selectedMission]?.images.length || 0} telemetry-tagged geotiff frame captures to NodeODM reconstructor.`
+        `Command Sent: UPLOAD\n\nData link established.\nSuccessfully transferred ${mockMissions[selectedMission]?.images.length || 0} telemetry-tagged geotiff frame captures to the 3D reconstructor.`
       )
     }, 1500)
   }
@@ -2142,7 +2142,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <p className="eyebrow">Capture</p>
-                  <h1>Video frames to WebODM reconstruction</h1>
+                  <h1>Video frames to 3D model</h1>
                 </div>
                 <button className="icon-button" type="button" onClick={() => fileInputRef.current?.click()} title="Choose video">
                   <UploadCloud size={20} />
@@ -2252,21 +2252,13 @@ function App() {
             <div className="webodm-panel">
               <div className="panel-heading compact">
                 <div>
-                  <p className="eyebrow">WebODM</p>
-                  <h2>Processing node</h2>
+                  <p className="eyebrow">3D Model</p>
+                  <h2>Processing engine</h2>
                 </div>
                 <KeyRound size={20} />
               </div>
 
               <div className="form-grid">
-              <label className="field wide">
-                <span>API base</span>
-                <input
-                  value={connection.baseUrl}
-                  onChange={(event) => setConnection({ ...connection, baseUrl: event.target.value })}
-                  placeholder="/webodm"
-                />
-              </label>
               <label className="field">
                 <span>Username</span>
                 <input
@@ -2321,7 +2313,7 @@ function App() {
                 disabled={frames.length < 2 || isSubmitting || polling}
               >
                 {isSubmitting || polling ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}
-                <span>Send to WebODM</span>
+                <span>Send to 3D Engine</span>
               </button>
               <button
                 className="primary-action secondary"
@@ -2331,7 +2323,7 @@ function App() {
                 style={{ marginTop: 10 }}
               >
                 {isLocalSubmitting ? <LoaderCircle size={18} className="spin" /> : <UploadCloud size={18} />}
-                <span>Send to Local NodeODM</span>
+                <span>Send to Local Processor</span>
               </button>
             </div>
 
