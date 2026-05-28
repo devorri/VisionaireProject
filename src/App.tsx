@@ -18,11 +18,19 @@ import {
   UploadCloud,
   Video,
   WandSparkles,
+  MapPin,
+  Pause,
+  Navigation,
+  Compass,
+  Eye,
+  AlertTriangle,
 } from 'lucide-react'
 import * as THREE from 'three'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 import './App.css'
 
 type ExtractedFrame = {
@@ -1053,6 +1061,219 @@ async function extractVideoFrames(
   }
 }
 
+// ==========================================
+// INTERACTIVE LEAFLET MAP WRAPPER COMPONENT
+// ==========================================
+function InteractiveMap({
+  boundaryPins,
+  setBoundaryPins,
+  isMapClosed,
+  homePos,
+  setHomePos,
+  mapMode,
+  setMapMode,
+  surveyPath,
+  isSimulating,
+  simulatedDronePos,
+  simulatedGpsTrail,
+  setPlannedArea,
+  calculateAreaMeters,
+}: {
+  boundaryPins: Array<{ lat: number; lng: number }>
+  setBoundaryPins: React.Dispatch<React.SetStateAction<Array<{ lat: number; lng: number }>>>
+  isMapClosed: boolean
+  homePos: { lat: number; lng: number } | null
+  setHomePos: (pos: { lat: number; lng: number } | null) => void
+  mapMode: 'home' | 'pin'
+  setMapMode: (mode: 'home' | 'pin') => void
+  surveyPath: Array<{ lat: number; lng: number }>
+  isSimulating: boolean
+  simulatedDronePos: { lat: number; lng: number } | null
+  simulatedGpsTrail: Array<{ lat: number; lng: number }>
+  setPlannedArea: (area: number) => void
+  calculateAreaMeters: (coords: Array<{ lat: number; lng: number }>) => number
+}) {
+  const mapContainerRef = useRef<HTMLDivElement | null>(null)
+  const mapRef = useRef<L.Map | null>(null)
+  const homeMarkerRef = useRef<L.Marker | null>(null)
+  const boundaryMarkersGroupRef = useRef<L.LayerGroup | null>(null)
+  const boundaryPolylineRef = useRef<L.Polyline | null>(null)
+  const boundaryPolygonRef = useRef<L.Polygon | null>(null)
+  const surveyPolylineRef = useRef<L.Polyline | null>(null)
+  const droneMarkerRef = useRef<L.Marker | null>(null)
+  const gpsTrailPolylineRef = useRef<L.Polyline | null>(null)
+
+  // Initialize Map Instance
+  useEffect(() => {
+    if (!mapContainerRef.current) return
+
+    // Quezon City area (matching terrain.php defaults: 14.6841, 121.0184)
+    const initialMap = L.map(mapContainerRef.current).setView([14.6841, 121.0184], 18)
+    mapRef.current = initialMap
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+    }).addTo(initialMap)
+
+    boundaryMarkersGroupRef.current = L.layerGroup().addTo(initialMap)
+
+    return () => {
+      initialMap.remove()
+      mapRef.current = null
+    }
+  }, [])
+
+  // Sync Click Listener with map mode state
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    map.off('click')
+
+    map.on('click', (event: L.LeafletMouseEvent) => {
+      const { lat, lng } = event.latlng
+      if (mapMode === 'home') {
+        setHomePos({ lat, lng })
+        setMapMode('pin') // revert to pin placing mode
+      } else {
+        if (isMapClosed) return
+        setBoundaryPins((prev) => [...prev, { lat, lng }])
+      }
+    })
+  }, [mapMode, isMapClosed, setHomePos, setMapMode, setBoundaryPins])
+
+  // Sync Boundary Pins & Enclosed Area Polygon
+  useEffect(() => {
+    const map = mapRef.current
+    const group = boundaryMarkersGroupRef.current
+    if (!map || !group) return
+
+    // Refresh markers
+    group.clearLayers()
+
+    boundaryPins.forEach((pin, index) => {
+      const marker = L.marker([pin.lat, pin.lng], {
+        draggable: !isMapClosed,
+        icon: L.divIcon({
+          html: `<div class="map-pin-badge">${index + 1}</div>`,
+          className: 'custom-map-pin',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+        }),
+      })
+
+      marker.on('dragend', (e: any) => {
+        const nextLatLng = e.target.getLatLng()
+        setBoundaryPins((current) => {
+          const next = [...current]
+          next[index] = { lat: nextLatLng.lat, lng: nextLatLng.lng }
+          return next
+        })
+      })
+
+      marker.addTo(group)
+    })
+
+    // Redraw polyline/polygon path
+    if (boundaryPolylineRef.current) map.removeLayer(boundaryPolylineRef.current)
+    if (boundaryPolygonRef.current) map.removeLayer(boundaryPolygonRef.current)
+
+    const latlngs = boundaryPins.map((p) => [p.lat, p.lng] as [number, number])
+
+    if (boundaryPins.length >= 2) {
+      boundaryPolylineRef.current = L.polyline(latlngs, {
+        color: '#1d755e',
+        weight: 3,
+        dashArray: isMapClosed ? undefined : '5, 5',
+      }).addTo(map)
+    }
+
+    if (isMapClosed && boundaryPins.length >= 3) {
+      boundaryPolygonRef.current = L.polygon(latlngs, {
+        color: '#1d755e',
+        fillColor: '#1d755e',
+        fillOpacity: 0.15,
+        weight: 0,
+      }).addTo(map)
+
+      const area = calculateAreaMeters(boundaryPins)
+      setPlannedArea(area)
+    } else {
+      setPlannedArea(0)
+    }
+  }, [boundaryPins, isMapClosed, setBoundaryPins, setPlannedArea, calculateAreaMeters])
+
+  // Sync Home Marker
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    if (homeMarkerRef.current) map.removeLayer(homeMarkerRef.current)
+
+    if (homePos) {
+      homeMarkerRef.current = L.marker([homePos.lat, homePos.lng], {
+        icon: L.divIcon({
+          html: `<div class="home-pin-badge">🏠</div>`,
+          className: 'custom-home-pin',
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        }),
+      })
+        .addTo(map)
+        .bindTooltip('HOME', { permanent: true, direction: 'top', offset: [0, -10] })
+    }
+  }, [homePos])
+
+  // Sync Generated Flight Survey Path
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    if (surveyPolylineRef.current) map.removeLayer(surveyPolylineRef.current)
+
+    if (surveyPath.length >= 2) {
+      const latlngs = surveyPath.map((p) => [p.lat, p.lng] as [number, number])
+      surveyPolylineRef.current = L.polyline(latlngs, {
+        color: '#e0a33b',
+        weight: 3,
+        opacity: 0.85,
+      }).addTo(map)
+    }
+  }, [surveyPath])
+
+  // Sync Simulated Telemetry Drone Marker & Blazing GPS Trail
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    if (droneMarkerRef.current) map.removeLayer(droneMarkerRef.current)
+    if (gpsTrailPolylineRef.current) map.removeLayer(gpsTrailPolylineRef.current)
+
+    if (isSimulating && simulatedDronePos) {
+      droneMarkerRef.current = L.marker([simulatedDronePos.lat, simulatedDronePos.lng], {
+        icon: L.divIcon({
+          html: `<div class="sim-drone-badge">🚁</div>`,
+          className: 'custom-drone-pin',
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
+        }),
+      }).addTo(map)
+
+      if (simulatedGpsTrail.length >= 2) {
+        const trailLatLngs = simulatedGpsTrail.map((p) => [p.lat, p.lng] as [number, number])
+        gpsTrailPolylineRef.current = L.polyline(trailLatLngs, {
+          color: '#ffbf2f',
+          weight: 4,
+          opacity: 0.9,
+          dashArray: '3, 6',
+        }).addTo(map)
+      }
+    }
+  }, [isSimulating, simulatedDronePos, simulatedGpsTrail])
+
+  return <div ref={mapContainerRef} style={{ width: '100%', height: '460px', borderRadius: '12px', border: '1px solid rgba(20, 33, 31, 0.12)' }} />
+}
+
 function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [videoFile, setVideoFile] = useState<File | null>(null)
@@ -1087,6 +1308,142 @@ function App() {
   })
 
   const requiresPassword = connection.username !== 'admin'
+
+  // ==========================================
+  // MULTI-TAB WORKSPACE STATES
+  // ==========================================
+  const [activeTab, setActiveTab] = useState<'reconstruction' | 'drone' | 'planner' | 'polycam'>('reconstruction')
+
+  // GLASSMORPHIC CUSTOM ALERT DIALOG SYSTEM
+  const [modalOpen, setModalOpen] = useState(false)
+  const [modalTitle, setModalTitle] = useState('')
+  const [modalBody, setModalBody] = useState('')
+  const triggerModal = (title: string, body: string) => {
+    setModalTitle(title)
+    setModalBody(body)
+    setModalOpen(true)
+  }
+
+  // DRONE COMMAND CENTER STATES
+  const [droneStatus, setDroneStatus] = useState<'idle' | 'scanning' | 'uploading' | 'complete'>('idle')
+  const [droneInterval, setDroneInterval] = useState(5)
+  const [selectedMission, setSelectedMission] = useState('Mission_2026-05-18_16-41')
+  
+  // Mock image databases for drone missions with Unsplash satellite/aerial scenery
+  const mockMissions: Record<string, { date: string; images: string[] }> = useMemo(() => ({
+    'Mission_2026-05-18_16-41': {
+      date: '2026-05-18 16:41:35',
+      images: [
+        'https://images.unsplash.com/photo-1508873696983-2df519f0397e?q=80&w=400',
+        'https://images.unsplash.com/photo-1500382017468-9049fed747ef?q=80&w=400',
+        'https://images.unsplash.com/photo-1473448912268-2022ce9509d8?q=80&w=400',
+        'https://images.unsplash.com/photo-1504280390367-361c6d9f38f4?q=80&w=400',
+        'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=400',
+        'https://images.unsplash.com/photo-1506744038136-46273834b3fb?q=80&w=400',
+      ]
+    },
+    'Mission_2026-05-17_12-45': {
+      date: '2026-05-17 12:45:43',
+      images: [
+        'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?q=80&w=400',
+        'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=400',
+        'https://images.unsplash.com/photo-1506744038136-46273834b3fb?q=80&w=400',
+        'https://images.unsplash.com/photo-1508873696983-2df519f0397e?q=80&w=400',
+        'https://images.unsplash.com/photo-1500382017468-9049fed747ef?q=80&w=400',
+      ]
+    },
+    'Mission_2026-05-16_16-26': {
+      date: '2026-05-16 16:26:26',
+      images: [
+        'https://images.unsplash.com/photo-1504280390367-361c6d9f38f4?q=80&w=400',
+        'https://images.unsplash.com/photo-1473448912268-2022ce9509d8?q=80&w=400',
+        'https://images.unsplash.com/photo-1500382017468-9049fed747ef?q=80&w=400',
+        'https://images.unsplash.com/photo-1508873696983-2df519f0397e?q=80&w=400',
+      ]
+    }
+  }), [])
+
+  // SCAN FLIGHT PLANNER STATES
+  const [mapSpacing, setMapSpacing] = useState(10)
+  const [mapOverlap, setMapOverlap] = useState(75)
+  const [mapAltitude, setMapAltitude] = useState(30)
+  const [mapMode, setMapMode] = useState<'home' | 'pin'>('pin')
+  const [boundaryPins, setBoundaryPins] = useState<Array<{ lat: number; lng: number }>>([])
+  const [isMapClosed, setIsMapClosed] = useState(false)
+  const [surveyPath, setSurveyPath] = useState<Array<{ lat: number; lng: number }>>([])
+  const [homePos, setHomePos] = useState<{ lat: number; lng: number } | null>({ lat: 14.6841, lng: 121.0184 })
+  const [plannedArea, setPlannedArea] = useState(0)
+
+  // FLIGHT SIMULATION ANIMATOR STATES
+  const [isSimulating, setIsSimulating] = useState(false)
+  const [simulatedDronePos, setSimulatedDronePos] = useState<{ lat: number; lng: number } | null>(null)
+  const [simulatedGpsTrail, setSimulatedGpsTrail] = useState<Array<{ lat: number; lng: number }>>([])
+
+  // POLYCAM HUB STATES
+  const [selectedPolycamIndex, setSelectedPolycamIndex] = useState(0)
+
+  const polycamCaptures = useMemo(() => [
+    {
+      id: '8c956e76-f933-43ab-9cbd-d283b5415f9b',
+      name: 'F405_2026-05-18_16-41-35',
+      date: 'May 18, 2026 16:41',
+      points: '1.2M',
+      size: '54 MB',
+      images: 124,
+      device: 'DJI Mavic 3 Pro',
+      quality: 'High Preset'
+    },
+    {
+      id: 'da859f41-8f9e-4912-8e98-ac46ce53f61b',
+      name: 'F405_2026-05-18_14-42-32',
+      date: 'May 18, 2026 14:42',
+      points: '890K',
+      size: '38 MB',
+      images: 98,
+      device: 'DJI Air 3',
+      quality: 'Medium Preset'
+    },
+    {
+      id: '052a1d01-034b-4352-bb89-f8efaffab9d0',
+      name: 'F405_2026-05-18_12-54-46',
+      date: 'May 18, 2026 12:54',
+      points: '1.5M',
+      size: '68 MB',
+      images: 156,
+      device: 'DJI Mavic 3 Pro',
+      quality: 'High Preset'
+    },
+    {
+      id: '07f7b282-5bc8-4d97-8ec0-5e06c25e76c0',
+      name: 'F405_2026-05-18_07-40-32',
+      date: 'May 18, 2026 07:40',
+      points: '750K',
+      size: '31 MB',
+      images: 84,
+      device: 'DJI Mini 4 Pro',
+      quality: 'Fast Preset'
+    },
+    {
+      id: '291258df-4e01-4d1c-a9f0-e5acbe51112a',
+      name: 'F405_2026-05-17_12-45-43',
+      date: 'May 17, 2026 12:45',
+      points: '1.1M',
+      size: '48 MB',
+      images: 110,
+      device: 'DJI Mavic 3 Pro',
+      quality: 'High Preset'
+    },
+    {
+      id: '2c7f3c4d-9c58-4581-9ad1-127845dfa067',
+      name: 'F405_2026-05-16_16-26-26',
+      date: 'May 16, 2026 16:26',
+      points: '610K',
+      size: '25 MB',
+      images: 62,
+      device: 'DJI Mini 4 Pro',
+      quality: 'Fast Preset'
+    }
+  ], [])
 
   useEffect(() => {
     return () => {
@@ -1431,6 +1788,221 @@ function App() {
     [apiBase, projectId, task, token],
   )
 
+  // ==========================================
+  // EFFECT FOR GPS FLIGHT TRACKING SIMULATION
+  // ==========================================
+  useEffect(() => {
+    if (!isSimulating || surveyPath.length === 0) {
+      setSimulatedDronePos(null)
+      return
+    }
+
+    setSimulatedDronePos(surveyPath[0])
+    setSimulatedGpsTrail([surveyPath[0]])
+    let index = 0
+
+    const interval = setInterval(() => {
+      index += 1
+      if (index >= surveyPath.length) {
+        clearInterval(interval)
+        setIsSimulating(false)
+        triggerModal(
+          "🚁 Survey Simulation Complete",
+          `Autonomous survey completed! All ${surveyPath.length - 2} waypoint camera captures scanned at an altitude of ${mapAltitude}m with ${mapOverlap}% overlap. Drone successfully returned to home.`
+        )
+        setDroneStatus('complete')
+      } else {
+        const nextPos = surveyPath[index]
+        setSimulatedDronePos(nextPos)
+        setSimulatedGpsTrail((prev) => [...prev, nextPos])
+      }
+    }, 450)
+
+    return () => clearInterval(interval)
+  }, [isSimulating, surveyPath, mapAltitude, mapOverlap])
+
+  // ==========================================
+  // DRONE COMMAND CENTER HANDLERS
+  // ==========================================
+  const handleDroneStart = () => {
+    setDroneStatus('scanning')
+    triggerModal(
+      "🚁 Drone Start Mission",
+      `Command Sent: START\n\nPre-flight check successfully completed.\nDrone commenced automated takeoff and is flying to the starting waypoint at ${mapAltitude}m altitude.\nScanning interval configured for ${droneInterval} seconds.`
+    )
+  }
+
+  const handleDroneStop = () => {
+    setDroneStatus('idle')
+    triggerModal(
+      "🚁 Drone Return-to-Home",
+      `Command Sent: STOP\n\nActive flight mission aborted.\nDrone has initiated automated RTH (Return-To-Home) procedure. Current altitude holding at 30m.`
+    )
+  }
+
+  const handleDroneUpload = () => {
+    setDroneStatus('uploading')
+    setTimeout(() => {
+      setDroneStatus('complete')
+      triggerModal(
+        "📤 Payload Upload Success",
+        `Command Sent: UPLOAD\n\nData link established.\nSuccessfully transferred ${mockMissions[selectedMission]?.images.length || 0} telemetry-tagged geotiff frame captures to NodeODM reconstructor.`
+      )
+    }, 1500)
+  }
+
+  const handleDroneDeleteAll = () => {
+    triggerModal(
+      "🗑️ Clear Mission Memory",
+      `Command Sent: DELETE_ALL\n\nCleared high-speed SD card memory partition for ${selectedMission}. Virtual logs and mission footprint caches wiped.`
+    )
+  }
+
+  // ==========================================
+  // SCAN FLIGHT PLANNER HANDLERS
+  // ==========================================
+  // Shoelace area calculation in meters squared
+  const calculateAreaMeters = useCallback((coords: Array<{ lat: number; lng: number }>) => {
+    let area = 0
+    const R = 6378137 // Earth radius in meters
+
+    for (let i = 0; i < coords.length; i++) {
+      const p1 = coords[i]
+      const p2 = coords[(i + 1) % coords.length]
+
+      const lat1 = p1.lat * Math.PI / 180
+      const lat2 = p2.lat * Math.PI / 180
+      const lng1 = p1.lng * Math.PI / 180
+      const lng2 = p2.lng * Math.PI / 180
+
+      area += (lng2 - lng1) * (2 + Math.sin(lat1) + Math.sin(lat2))
+    }
+
+    area = (area * R * R) / 2
+    return Math.abs(area)
+  }, [])
+
+  const handleGenerateSurvey = () => {
+    if (boundaryPins.length < 3) {
+      triggerModal("⚠️ Path Generator Error", "Please place at least 3 boundary pins on the map first.")
+      return
+    }
+    if (!isMapClosed) {
+      triggerModal("⚠️ Path Generator Error", "Please click 'CLOSE AREA' to complete the boundary polygon first.")
+      return
+    }
+    if (!homePos) {
+      triggerModal("⚠️ Path Generator Error", "Please click 'SET HOME' on the map to define the drone home location.")
+      return
+    }
+
+    // Lawnmower pattern generator
+    // Find bounds of boundaryPins
+    const lats = boundaryPins.map(p => p.lat)
+    const lngs = boundaryPins.map(p => p.lng)
+    const minLat = Math.min(...lats)
+    const maxLat = Math.max(...lats)
+    const minLng = Math.min(...lngs)
+    const maxLng = Math.max(...lngs)
+
+    // Rough conversion of meters to degrees
+    const avgLat = (minLat + maxLat) / 2
+    const metersPerDegLat = 111320
+    const metersPerDegLon = 111320 * Math.cos(avgLat * Math.PI / 180)
+    
+    // Spacing in degrees
+    const stepLat = mapSpacing / metersPerDegLat
+    const stepLng = mapSpacing / metersPerDegLon
+
+    // Ray casting point-in-polygon check
+    const isPointInPolygon = (pt: { lat: number; lng: number }, polygon: Array<{ lat: number; lng: number }>) => {
+      let inside = false
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i].lng, yi = polygon[i].lat
+        const xj = polygon[j].lng, yj = polygon[j].lat
+        const intersect = ((yi > pt.lat) !== (yj > pt.lat))
+          && (pt.lng < (xj - xi) * (pt.lat - yi) / (yj - yi) + xi)
+        if (intersect) inside = !inside
+      }
+      return inside
+    }
+
+    // Generate grid
+    const points: Array<{ lat: number; lng: number }> = []
+    
+    for (let lat = minLat; lat <= maxLat; lat += stepLat) {
+      const rowPoints: Array<{ lat: number; lng: number }> = []
+      for (let lng = minLng; lng <= maxLng; lng += stepLng) {
+        const pt = { lat, lng }
+        if (isPointInPolygon(pt, boundaryPins)) {
+          rowPoints.push(pt)
+        }
+      }
+      // Sort row by longitude
+      rowPoints.sort((a, b) => a.lng - b.lng)
+      points.push(...rowPoints)
+    }
+
+    if (points.length === 0) {
+      triggerModal("⚠️ Generator Notice", "No survey waypoints could be generated in the enclosed region. Try reducing the Spacing slider.")
+      return
+    }
+
+    // Lawnmower sorting: sort by latitude, reverse every alternate row
+    // Let's group points by rows roughly matching latitude
+    const threshold = stepLat / 2
+    const rowsMap = new Map<number, Array<{ lat: number; lng: number }>>()
+    
+    points.forEach(p => {
+      let foundRow = false
+      for (const latKey of rowsMap.keys()) {
+        if (Math.abs(p.lat - latKey) < threshold) {
+          rowsMap.get(latKey)!.push(p)
+          foundRow = true
+          break
+        }
+      }
+      if (!foundRow) {
+        rowsMap.set(p.lat, [p])
+      }
+    })
+
+    const sortedLatKeys = Array.from(rowsMap.keys()).sort((a: number, b: number) => a - b)
+    const sortedSurveyPath: Array<{ lat: number; lng: number }> = []
+    
+    // Add home at starting point
+    sortedSurveyPath.push(homePos)
+
+    sortedLatKeys.forEach((latKey, idx) => {
+      const row = rowsMap.get(latKey)!
+      row.sort((a, b) => a.lng - b.lng)
+      if (idx % 2 === 1) {
+        row.reverse() // alternate direction
+      }
+      sortedSurveyPath.push(...row)
+    })
+
+    // Return to home at end
+    sortedSurveyPath.push(homePos)
+
+    setSurveyPath(sortedSurveyPath)
+    triggerModal(
+      "✅ Lawnmower Survey Generated",
+      `Successfully generated survey path with ${sortedSurveyPath.length - 2} camera waypoints. \nTotal flight path length: ${(sortedSurveyPath.length * mapSpacing * 1.4).toFixed(1)}m. Overlap: ${mapOverlap}%. Spacing: ${mapSpacing}m.`
+    )
+  }
+
+  const handleSavePlan = () => {
+    if (surveyPath.length === 0) {
+      triggerModal("⚠️ File Sync Error", "Please generate a survey flight plan first before exporting.")
+      return
+    }
+    triggerModal(
+      "💾 Flight Plan Saved",
+      `Saved successfully!\n\nFlight plan waypoints has been compiled and synchronized to 'path.txt' and 'nav.txt' on the main control unit (Mocked).`
+    )
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1446,350 +2018,854 @@ function App() {
         </div>
       </header>
 
-      <section className="workspace">
-        <div className="capture-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Capture</p>
-              <h1>Video frames to WebODM reconstruction</h1>
-            </div>
-            <button className="icon-button" type="button" onClick={() => fileInputRef.current?.click()} title="Choose video">
-              <UploadCloud size={20} />
-            </button>
-          </div>
+      {/* 🌟 PREMIUM SCIFI TAB NAVIGATION DECK */}
+      <nav className="workspace-tab-deck" aria-label="Workspace navigations">
+        <button
+          className={activeTab === 'reconstruction' ? 'tab-btn active' : 'tab-btn'}
+          onClick={() => setActiveTab('reconstruction')}
+          type="button"
+        >
+          <WandSparkles size={16} />
+          <span>Video Reconstruction</span>
+        </button>
+        <button
+          className={activeTab === 'drone' ? 'tab-btn active' : 'tab-btn'}
+          onClick={() => {
+            setActiveTab('drone')
+            triggerModal("📡 Drone Telemetry Restored", "Establishing encrypted satellite handshake with drone control unit. High-speed raw images folder synchronized.")
+          }}
+          type="button"
+        >
+          <RadioTower size={16} />
+          <span>Drone Command</span>
+        </button>
+        <button
+          className={activeTab === 'planner' ? 'tab-btn active' : 'tab-btn'}
+          onClick={() => {
+            setActiveTab('planner')
+            triggerModal("🗺️ Scan Flight Planner PRO", "GPS Flight route system initialized. Active mapping coordinates queued to Quezon City sector.")
+          }}
+          type="button"
+        >
+          <Compass size={16} />
+          <span>Flight Planner</span>
+        </button>
+        <button
+          className={activeTab === 'polycam' ? 'tab-btn active' : 'tab-btn'}
+          onClick={() => {
+            setActiveTab('polycam')
+            triggerModal("🔬 Polycam 3D Capture Hub", "Loaded 6 interactive 3D site captures from database. Native GLB and point-cloud metrics online.")
+          }}
+          type="button"
+        >
+          <Box size={16} />
+          <span>Polycam 3D Hub</span>
+        </button>
+      </nav>
 
-          <label
-            className="dropzone"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={handleDrop}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="video/*"
-              onChange={(event) => {
-                const [file] = Array.from(event.target.files ?? [])
-                if (file) void handleVideo(file)
-              }}
-            />
-            <span className="drop-icon">
-              <Video size={30} />
-            </span>
-            <span className="drop-title">{videoFile ? videoFile.name : 'Drop video'}</span>
-            <span className="drop-meta">
-              {videoMeta
-                ? `${formatTime(videoMeta.duration)} · ${videoMeta.width}x${videoMeta.height}`
-                : 'MP4, MOV, WebM'}
-            </span>
-          </label>
-
-          <div className="control-grid">
-            <label className="field">
-              <span>Frames/sec</span>
-              <input
-                type="number"
-                min="0.2"
-                max="5"
-                step="0.2"
-                value={frameRate}
-                onChange={(event) => setFrameRate(Number(event.target.value))}
-              />
-            </label>
-            <label className="field">
-              <span>Max frames</span>
-              <input
-                type="number"
-                min="2"
-                max="600"
-                step="1"
-                value={maxFrames}
-                onChange={(event) => setMaxFrames(Number(event.target.value))}
-              />
-            </label>
-            <label className="field">
-              <span>JPEG quality</span>
-              <input
-                type="range"
-                min="0.55"
-                max="0.95"
-                step="0.01"
-                value={jpegQuality}
-                onChange={(event) => setJpegQuality(Number(event.target.value))}
-              />
-            </label>
-          </div>
-
-          <div className="segmented" aria-label="Processing quality">
-            {(Object.keys(qualityOptions) as QualityPreset[]).map((key) => (
-              <button
-                key={key}
-                type="button"
-                className={quality === key ? 'selected' : ''}
-                onClick={() => setQuality(key)}
-              >
-                {qualityOptions[key].label}
-              </button>
-            ))}
-          </div>
-
-          <button className="primary-action" type="button" onClick={handleExtract} disabled={!videoFile || isExtracting}>
-            {isExtracting ? <LoaderCircle size={18} className="spin" /> : <Film size={18} />}
-            <span>Extract frames</span>
-          </button>
-
-          <div className="progress-line" aria-label="Extraction progress">
-            <span style={{ width: `${extractProgress}%` }} />
-          </div>
-        </div>
-
-        <div className="preview-panel">
-          {localModelUrl ? <ModelViewer url={localModelUrl} /> : <ThreePreview />}
-          <div className="preview-overlay">
-            <p className="eyebrow">{localModelUrl ? 'Model' : 'Preview'}</p>
-            <h2>
-              {localModelUrl
-                ? 'Textured GLB preview'
-                : frames.length
-                  ? `${frames.length} images prepared`
-                  : 'Point cloud target'}
-            </h2>
-          </div>
-        </div>
-      </section>
-
-      <section className="pipeline">
-        <div className="webodm-panel">
-          <div className="panel-heading compact">
-            <div>
-              <p className="eyebrow">WebODM</p>
-              <h2>Processing node</h2>
-            </div>
-            <KeyRound size={20} />
-          </div>
-
-          <div className="form-grid">
-            <label className="field wide">
-              <span>API base</span>
-              <input
-                value={connection.baseUrl}
-                onChange={(event) => setConnection({ ...connection, baseUrl: event.target.value })}
-                placeholder="/webodm"
-              />
-            </label>
-            <label className="field">
-              <span>Username</span>
-              <input
-                value={connection.username}
-                onChange={(event) => setConnection({
-                  ...connection,
-                  username: event.target.value,
-                  password: event.target.value === 'admin' ? '' : connection.password,
-                })}
-              />
-            </label>
-            {requiresPassword ? (
-              <label className="field">
-                <span>Password</span>
-                <input
-                  type="password"
-                  value={connection.password}
-                  onChange={(event) => setConnection({ ...connection, password: event.target.value })}
-                />
-              </label>
-            ) : (
-              <div className="field">
-                <span>Password</span>
-                <input
-                  type="text"
-                  value=""
-                  disabled
-                  placeholder="Not required for admin"
-                />
+      {/* ==========================================
+          TAB 1: VIDEO RECONSTRUCTION (ORIGINAL WORKSPACE)
+          ========================================== */}
+      {activeTab === 'reconstruction' && (
+        <>
+          <section className="workspace">
+            <div className="capture-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">Capture</p>
+                  <h1>Video frames to 3D Model</h1>
+                </div>
+                <button className="icon-button" type="button" onClick={() => fileInputRef.current?.click()} title="Choose video">
+                  <UploadCloud size={20} />
+                </button>
               </div>
-            )}
-            <label className="field">
-              <span>Project</span>
-              <input
-                value={connection.projectName}
-                onChange={(event) => setConnection({ ...connection, projectName: event.target.value })}
-              />
-            </label>
-            <label className="field">
-              <span>Task</span>
-              <input
-                value={connection.taskName}
-                onChange={(event) => setConnection({ ...connection, taskName: event.target.value })}
-              />
-            </label>
-          </div>
 
-          <button
-            className="primary-action secondary"
-            type="button"
-            onClick={handleSubmitToWebOdm}
-            disabled={frames.length < 2 || isSubmitting || polling}
-          >
-            {isSubmitting || polling ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}
-            <span>Send to WebODM</span>
-          </button>
-          <button
-            className="primary-action secondary"
-            type="button"
-            onClick={handleSubmitToGateway}
-            disabled={!videoFile || isLocalSubmitting}
-            style={{ marginTop: 10 }}
-          >
-            {isLocalSubmitting ? <LoaderCircle size={18} className="spin" /> : <UploadCloud size={18} />}
-            <span>Send to Local NodeODM</span>
-          </button>
-        </div>
+              <label
+                className="dropzone"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={handleDrop}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="video/*"
+                  onChange={(event) => {
+                    const [file] = Array.from(event.target.files ?? [])
+                    if (file) void handleVideo(file)
+                  }}
+                />
+                <span className="drop-icon">
+                  <Video size={30} />
+                </span>
+                <span className="drop-title">{videoFile ? videoFile.name : 'Drop video'}</span>
+                <span className="drop-meta">
+                  {videoMeta
+                    ? `${formatTime(videoMeta.duration)} · ${videoMeta.width}x${videoMeta.height}`
+                    : 'MP4, MOV, WebM'}
+                </span>
+              </label>
 
-        <div className="job-panel">
-          <div className="panel-heading compact">
-            <div>
-              <p className="eyebrow">Job</p>
-              <h2>{task ? statusLabels[task.status] ?? 'Submitted' : 'Waiting'}</h2>
-            </div>
-            {task?.status === 40 ? <Check size={20} /> : <SlidersHorizontal size={20} />}
-          </div>
+              <div className="control-grid">
+                <label className="field">
+                  <span>Frames/sec</span>
+                  <input
+                    type="number"
+                    min="0.2"
+                    max="5"
+                    step="0.2"
+                    value={frameRate}
+                    onChange={(event) => setFrameRate(Number(event.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Max frames</span>
+                  <input
+                    type="number"
+                    min="2"
+                    max="600"
+                    step="1"
+                    value={maxFrames}
+                    onChange={(event) => setMaxFrames(Number(event.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>JPEG quality</span>
+                  <input
+                    type="range"
+                    min="0.55"
+                    max="0.95"
+                    step="0.01"
+                    value={jpegQuality}
+                    onChange={(event) => setJpegQuality(Number(event.target.value))}
+                  />
+                </label>
+              </div>
 
-          <div className="metric-row">
-            <div>
-              <span>{frames.length}</span>
-              <p>frames</p>
-            </div>
-            <div>
-              <span>{(totalFrameSize / 1024 / 1024).toFixed(1)}MB</span>
-              <p>payload</p>
-            </div>
-            <div>
-              <span>{task?.images_count ?? '-'}</span>
-              <p>uploaded</p>
-            </div>
-          </div>
-
-          <div className="job-progress">
-            <label>
-              <span>Upload</span>
-              <strong>{clampProgress(task?.upload_progress)}%</strong>
-            </label>
-            <div><span style={{ width: `${clampProgress(task?.upload_progress)}%` }} /></div>
-            <label>
-              <span>Resize</span>
-              <strong>{clampProgress(task?.resize_progress)}%</strong>
-            </label>
-            <div><span style={{ width: `${clampProgress(task?.resize_progress)}%` }} /></div>
-            <label>
-              <span>Run</span>
-              <strong>{clampProgress(task?.running_progress)}%</strong>
-            </label>
-            <div><span style={{ width: `${clampProgress(task?.running_progress)}%` }} /></div>
-          </div>
-
-          {task?.last_error ? <p className="error-text">{task.last_error}</p> : null}
-        </div>
-      </section>
-
-      <section className="output-strip">
-        <div className="frames-strip">
-          {frames.length ? (
-            frames.slice(0, 12).map((frame) => (
-              <figure key={frame.id} className="frame-card">
-                <img src={frame.url} alt={`Frame at ${formatTime(frame.timestamp)}`} />
-                <figcaption>{formatTime(frame.timestamp)}</figcaption>
-              </figure>
-            ))
-          ) : (
-            <div className="empty-state">
-              <WandSparkles size={22} />
-              <span>No frames yet</span>
-            </div>
-          )}
-        </div>
-
-        <div className="asset-list">
-          <div className="model-actions">
-            <button
-              className="asset-link button-link"
-              type="button"
-              onClick={handleLoadLatestLocalModel}
-              disabled={isLoadingLatestModel || isLoadingLocalTasks}
-            >
-              {isLoadingLatestModel ? <LoaderCircle size={18} className="spin" /> : <Box size={18} />}
-              <span>Load latest model</span>
-            </button>
-            <button
-              className="asset-link button-link"
-              type="button"
-              onClick={refreshLocalTasks}
-              disabled={isLoadingLocalTasks}
-            >
-              {isLoadingLocalTasks ? <LoaderCircle size={18} className="spin" /> : <RadioTower size={18} />}
-              <span>Refresh list</span>
-            </button>
-          </div>
-          {localTasks.length ? (
-            <div className="local-model-list">
-              {localTasks.map((localTask) => {
-                const code = localTask.status?.code
-                const complete = isNodeOdmComplete(code)
-                const loading = loadingLocalTaskUuid === localTask.uuid
-                const active = activeLocalTaskUuid === localTask.uuid
-
-                return (
-                  <div
-                    key={localTask.uuid}
-                    className="local-model-row"
-                    data-active={active ? 'true' : undefined}
-                    data-complete={complete ? 'true' : undefined}
+              <div className="segmented" aria-label="Processing quality">
+                {(Object.keys(qualityOptions) as QualityPreset[]).map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={quality === key ? 'selected' : ''}
+                    onClick={() => setQuality(key)}
                   >
-                    <div>
-                      <strong>{localTask.name || `Task ${shortUuid(localTask.uuid)}`}</strong>
-                      <span>
-                        {nodeOdmStatusLabel(code)} / {localTask.imagesCount ?? '-'} images / {localTask.progress ?? 0}%
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => loadLocalModel(localTask.uuid, localTask)}
-                      disabled={!complete || loading}
-                      title={complete ? 'Load model preview' : 'Task is not complete yet'}
-                    >
-                      {loading ? <LoaderCircle size={16} className="spin" /> : <Box size={16} />}
-                      <span>{active ? 'Loaded' : 'Load'}</span>
-                    </button>
+                    {qualityOptions[key].label}
+                  </button>
+                ))}
+              </div>
+
+              <button className="primary-action" type="button" onClick={handleExtract} disabled={!videoFile || isExtracting}>
+                {isExtracting ? <LoaderCircle size={18} className="spin" /> : <Film size={18} />}
+                <span>Extract frames</span>
+              </button>
+
+              <div className="progress-line" aria-label="Extraction progress">
+                <span style={{ width: `${extractProgress}%` }} />
+              </div>
+            </div>
+
+            <div className="preview-panel">
+              {localModelUrl ? <ModelViewer url={localModelUrl} /> : <ThreePreview />}
+              <div className="preview-overlay">
+                <p className="eyebrow">{localModelUrl ? 'Model' : 'Preview'}</p>
+                <h2>
+                  {localModelUrl
+                    ? 'Textured GLB preview'
+                    : frames.length
+                      ? `${frames.length} images prepared`
+                      : 'Point cloud target'}
+                </h2>
+              </div>
+            </div>
+          </section>
+
+          <section className="pipeline">
+            <div className="conversion-panel">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">Processing</p>
+                  <h2>3D Model Converter</h2>
+                </div>
+                <WandSparkles size={20} />
+              </div>
+
+              <div className="conversion-info">
+                <div className="info-stat">
+                  <span>{frames.length}</span>
+                  <p>frames ready</p>
+                </div>
+                <div className="info-stat">
+                  <span>{(totalFrameSize / 1024 / 1024).toFixed(1)}MB</span>
+                  <p>total size</p>
+                </div>
+                <div className="info-stat">
+                  <span>{quality}</span>
+                  <p>quality mode</p>
+                </div>
+              </div>
+
+              <button
+                className="primary-action"
+                type="button"
+                onClick={handleSubmitToGateway}
+                disabled={!videoFile || isLocalSubmitting || frames.length < 2}
+              >
+                {isLocalSubmitting ? <LoaderCircle size={18} className="spin" /> : <Pentagon size={18} />}
+                <span>Generate 3D Model</span>
+              </button>
+            </div>
+
+            <div className="job-panel">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">Job</p>
+                  <h2>{task ? statusLabels[task.status] ?? 'Submitted' : 'Waiting'}</h2>
+                </div>
+                {task?.status === 40 ? <Check size={20} /> : <SlidersHorizontal size={20} />}
+              </div>
+
+              <div className="metric-row">
+                <div>
+                  <span>{frames.length}</span>
+                  <p>frames</p>
+                </div>
+                <div>
+                  <span>{(totalFrameSize / 1024 / 1024).toFixed(1)}MB</span>
+                  <p>payload</p>
+                </div>
+                <div>
+                  <span>{task?.images_count ?? '-'}</span>
+                  <p>uploaded</p>
+                </div>
+              </div>
+
+              <div className="job-progress">
+                <label>
+                  <span>Upload</span>
+                  <strong>{clampProgress(task?.upload_progress)}%</strong>
+                </label>
+                <div><span style={{ width: `${clampProgress(task?.upload_progress)}%` }} /></div>
+                <label>
+                  <span>Resize</span>
+                  <strong>{clampProgress(task?.resize_progress)}%</strong>
+                </label>
+                <div><span style={{ width: `${clampProgress(task?.resize_progress)}%` }} /></div>
+                <label>
+                  <span>Run</span>
+                  <strong>{clampProgress(task?.running_progress)}%</strong>
+                </label>
+                <div><span style={{ width: `${clampProgress(task?.running_progress)}%` }} /></div>
+              </div>
+
+              {task?.last_error ? <p className="error-text">{task.last_error}</p> : null}
+            </div>
+          </section>
+
+          <section className="output-strip">
+            <div className="frames-strip">
+              {frames.length ? (
+                frames.slice(0, 12).map((frame) => (
+                  <figure key={frame.id} className="frame-card">
+                    <img src={frame.url} alt={`Frame at ${formatTime(frame.timestamp)}`} />
+                    <figcaption>{formatTime(frame.timestamp)}</figcaption>
+                  </figure>
+                ))
+              ) : (
+                <div className="empty-state">
+                  <WandSparkles size={22} />
+                  <span>No frames yet</span>
+                </div>
+              )}
+            </div>
+
+            <div className="asset-list">
+              <div className="model-actions">
+                <button
+                  className="asset-link button-link"
+                  type="button"
+                  onClick={handleLoadLatestLocalModel}
+                  disabled={isLoadingLatestModel || isLoadingLocalTasks}
+                >
+                  {isLoadingLatestModel ? <LoaderCircle size={18} className="spin" /> : <Box size={18} />}
+                  <span>Load latest model</span>
+                </button>
+                <button
+                  className="asset-link button-link"
+                  type="button"
+                  onClick={refreshLocalTasks}
+                  disabled={isLoadingLocalTasks}
+                >
+                  {isLoadingLocalTasks ? <LoaderCircle size={18} className="spin" /> : <RadioTower size={18} />}
+                  <span>Refresh list</span>
+                </button>
+              </div>
+              {localTasks.length ? (
+                <div className="local-model-list">
+                  {localTasks.map((localTask) => {
+                    const code = localTask.status?.code
+                    const complete = isNodeOdmComplete(code)
+                    const loading = loadingLocalTaskUuid === localTask.uuid
+                    const active = activeLocalTaskUuid === localTask.uuid
+
+                    return (
+                      <div
+                        key={localTask.uuid}
+                        className="local-model-row"
+                        data-active={active ? 'true' : undefined}
+                        data-complete={complete ? 'true' : undefined}
+                      >
+                        <div>
+                          <strong>{localTask.name || `Task ${shortUuid(localTask.uuid)}`}</strong>
+                          <span>
+                            {nodeOdmStatusLabel(code)} / {localTask.imagesCount ?? '-'} images / {localTask.progress ?? 0}%
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => loadLocalModel(localTask.uuid, localTask)}
+                          disabled={!complete || loading}
+                          title={complete ? 'Load model preview' : 'Task is not complete yet'}
+                        >
+                          {loading ? <LoaderCircle size={16} className="spin" /> : <Box size={16} />}
+                          <span>{active ? 'Loaded' : 'Load'}</span>
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : null}
+              {localModelUrl ? (
+                <a key="local-model" className="asset-link" href={localModelUrl} target="_blank" rel="noreferrer">
+                  <Download size={18} />
+                  <span>Download preview GLB</span>
+                </a>
+              ) : null}
+              {selectedAssets.length ? (
+                selectedAssets.map((asset) => (
+                  <a key={asset} className="asset-link" href={downloadUrl(asset)} target="_blank" rel="noreferrer">
+                    <Download size={18} />
+                    <span>{assetLabels[asset]}</span>
+                  </a>
+                ))
+              ) : !localModelUrl ? (
+                <div className="empty-state">
+                  <Download size={22} />
+                  <span>Assets appear after completion</span>
+                </div>
+              ) : null}
+              {localTaskInfo ? (
+                <div className="local-task-note">
+                  <span>{localTaskInfo.imagesCount ?? '-'} images</span>
+                  <span>{localTaskInfo.progress ?? 100}% complete</span>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        </>
+      )}
+
+      {/* ==========================================
+          TAB 2: DRONE COMMAND CENTER WORKSPACE
+          ========================================== */}
+      {activeTab === 'drone' && (
+        <section className="drone-workspace">
+          <div className="drone-left-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Controls</p>
+                <h1>Drone Command Center</h1>
+              </div>
+              <div className={`drone-status-indicator data-status-${droneStatus}`}>
+                <span className="pulse-dot"></span>
+                <span className="status-text">
+                  {droneStatus === 'idle' && 'Connected & Idle'}
+                  {droneStatus === 'scanning' && '🚁 Flying & Scanning'}
+                  {droneStatus === 'uploading' && '📤 Syncing Payload'}
+                  {droneStatus === 'complete' && '✅ Mission Completed'}
+                </span>
+              </div>
+            </div>
+
+            <div className="drone-control-deck">
+              <button 
+                className="drone-btn start" 
+                onClick={handleDroneStart} 
+                disabled={droneStatus === 'scanning' || droneStatus === 'uploading'}
+              >
+                <Play size={18} />
+                <span>▶ Start Mission</span>
+              </button>
+              
+              <button 
+                className="drone-btn stop" 
+                onClick={handleDroneStop} 
+                disabled={droneStatus === 'idle'}
+              >
+                <Pause size={18} />
+                <span>Aborting Flight</span>
+              </button>
+
+              <button 
+                className="drone-btn upload" 
+                onClick={handleDroneUpload} 
+                disabled={droneStatus !== 'scanning' && droneStatus !== 'complete'}
+              >
+                <UploadCloud size={18} />
+                <span>📤 Upload Payload</span>
+              </button>
+
+              <button 
+                className="drone-btn delete" 
+                onClick={handleDroneDeleteAll}
+              >
+                <Trash2 size={18} />
+                <span>Clear Memory</span>
+              </button>
+            </div>
+
+            <div className="drone-configs field wide">
+              <span>Capture Interval Settings</span>
+              <div className="segmented">
+                {[1, 2, 5, 10, 30].map((sec) => (
+                  <button
+                    key={sec}
+                    type="button"
+                    className={droneInterval === sec ? 'selected' : ''}
+                    onClick={() => {
+                      setDroneInterval(sec)
+                      triggerModal("⏱️ Interval Sync", `Drone camera trigger interval configured to ${sec} seconds. Pre-flight handshake synced.`)
+                    }}
+                  >
+                    {sec}s
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="drone-mission-selector field wide" style={{ marginTop: '20px' }}>
+              <span>📁 Select Drone Mission Folder</span>
+              <select 
+                value={selectedMission} 
+                onChange={(e) => {
+                  setSelectedMission(e.target.value)
+                  triggerModal("📁 Directory Synced", `Loaded drone capture directory for: ${e.target.value}. Telemetry metadata logs imported.`)
+                }}
+                className="drone-dropdown"
+              >
+                {Object.keys(mockMissions).map((key) => (
+                  <option key={key} value={key}>{key} ({mockMissions[key].images.length} frames)</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="telemetry-readout" style={{ marginTop: '20px' }}>
+              <div className="telemetry-title">📡 Live System Telemetry</div>
+              <div className="telemetry-grid">
+                <div>
+                  <small>Battery</small>
+                  <strong>{droneStatus === 'scanning' ? '84%' : '98%'}</strong>
+                </div>
+                <div>
+                  <small>GPS Satellites</small>
+                  <strong>{droneStatus === 'idle' ? '08 (Fair)' : '18 (Excellent)'}</strong>
+                </div>
+                <div>
+                  <small>Link Quality</small>
+                  <strong>{droneStatus === 'idle' ? '92%' : '99.2%'}</strong>
+                </div>
+                <div>
+                  <small>Storage Remaining</small>
+                  <strong>58.4 GB</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="drone-right-panel">
+            <div className="active-viewport-container">
+              {/* SciFi overlay hud over simulated view */}
+              <div className="mock-live-map">
+                <div className="hud-corner top-left">ALT: {droneStatus === 'scanning' ? `${mapAltitude}m` : '0m'}</div>
+                <div className="hud-corner top-right">SPD: {droneStatus === 'scanning' ? '5.4 m/s' : '0 m/s'}</div>
+                <div className="hud-corner bottom-left">Msn: {selectedMission}</div>
+                <div className="hud-corner bottom-right">SAT: 18</div>
+                
+                {droneStatus === 'scanning' ? (
+                  <div className="stream-scanning-overlay">
+                    <span className="live-pill">🔴 SCANNING ACTIVE</span>
+                    <div className="scanning-reticle"></div>
                   </div>
-                )
-              })}
+                ) : (
+                  <div className="stream-idle-overlay">
+                    <span>📡 CAMERA LINK STANDBY</span>
+                  </div>
+                )}
+              </div>
+              <div className="preview-overlay">
+                <p className="eyebrow">Mission Viewport</p>
+                <h2>Active Overlook Feed</h2>
+              </div>
             </div>
-          ) : null}
-          {localModelUrl ? (
-            <a key="local-model" className="asset-link" href={localModelUrl} target="_blank" rel="noreferrer">
-              <Download size={18} />
-              <span>Download preview GLB</span>
-            </a>
-          ) : null}
-          {selectedAssets.length ? (
-            selectedAssets.map((asset) => (
-              <a key={asset} className="asset-link" href={downloadUrl(asset)} target="_blank" rel="noreferrer">
-                <Download size={18} />
-                <span>{assetLabels[asset]}</span>
-              </a>
-            ))
-          ) : !localModelUrl ? (
-            <div className="empty-state">
-              <Download size={22} />
-              <span>Assets appear after completion</span>
+
+            <div className="drone-images-deck">
+              <h3>🖼️ Captured Scenery Payload</h3>
+              <div className="drone-photos-grid">
+                {mockMissions[selectedMission]?.images.map((url, idx) => (
+                  <div key={idx} className="drone-photo-card">
+                    <img src={url} alt={`Scanned payload frame ${idx + 1}`} />
+                    <span className="photo-time">Frame_{idx + 1}.jpg</span>
+                  </div>
+                ))}
+              </div>
             </div>
-          ) : null}
-          {localTaskInfo ? (
-            <div className="local-task-note">
-              <span>{localTaskInfo.imagesCount ?? '-'} images</span>
-              <span>{localTaskInfo.progress ?? 100}% complete</span>
+          </div>
+        </section>
+      )}
+
+      {/* ==========================================
+          TAB 3: SCAN FLIGHT PLANNER WORKSPACE
+          ========================================== */}
+      {activeTab === 'planner' && (
+        <section className="planner-workspace">
+          <div className="planner-left-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Flight Planner</p>
+                <h1>3D Scan Flight Planner PRO</h1>
+              </div>
             </div>
-          ) : null}
+
+            <div className="planner-configs">
+              <div className="control-grid">
+                <label className="field">
+                  <span>Flight Alt (m)</span>
+                  <input
+                    type="number"
+                    min="10"
+                    max="120"
+                    step="5"
+                    value={mapAltitude}
+                    onChange={(event) => setMapAltitude(Number(event.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Spacing (m)</span>
+                  <input
+                    type="number"
+                    min="4"
+                    max="30"
+                    step="2"
+                    value={mapSpacing}
+                    onChange={(event) => setMapSpacing(Number(event.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Overlap Ratio (%)</span>
+                  <input
+                    type="range"
+                    min="60"
+                    max="90"
+                    step="5"
+                    value={mapOverlap}
+                    onChange={(event) => setMapOverlap(Number(event.target.value))}
+                  />
+                </label>
+              </div>
+
+              <div className="planner-area-readout">
+                <div className="area-metric">
+                  <small>Enclosed Survey Area</small>
+                  <strong>{plannedArea.toFixed(2)} m² ({(plannedArea / 10000).toFixed(4)} ha)</strong>
+                </div>
+                {plannedArea >= 10000 && (
+                  <div className="area-warning">
+                    <AlertTriangle size={16} />
+                    <span>Warning: Survey region exceeds 1 Hectare limits!</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="planner-tool-deck">
+                <button
+                  className={mapMode === 'home' ? 'tool-btn active' : 'tool-btn'}
+                  onClick={() => {
+                    setMapMode('home')
+                    triggerModal("📍 Set Drone Home", "Click anywhere on the Quezon City map to place the RED 🏠 Drone Takeoff Home marker.")
+                  }}
+                  type="button"
+                >
+                  <MapPin size={16} />
+                  <span>SET HOME</span>
+                </button>
+                <button
+                  className={mapMode === 'pin' && !isMapClosed ? 'tool-btn active' : 'tool-btn'}
+                  onClick={() => {
+                    setMapMode('pin')
+                    setIsMapClosed(false)
+                    setSurveyPath([])
+                  }}
+                  disabled={isMapClosed}
+                  type="button"
+                >
+                  <Pentagon size={16} />
+                  <span>ADD BOUNDARY</span>
+                </button>
+                <button
+                  className="tool-btn action-btn"
+                  onClick={() => {
+                    if (boundaryPins.length < 3) {
+                      triggerModal("⚠️ Close Area Error", "Need at least 3 boundary coordinates to seal region.")
+                      return
+                    }
+                    setIsMapClosed(true)
+                    triggerModal("✅ Region Sealed", "Enclosed acreage calculations and coordinates successfully compiled.")
+                  }}
+                  disabled={isMapClosed || boundaryPins.length < 3}
+                  type="button"
+                >
+                  <Scissors size={16} />
+                  <span>CLOSE AREA</span>
+                </button>
+                <button
+                  className="tool-btn action-btn highlight"
+                  onClick={handleGenerateSurvey}
+                  disabled={!isMapClosed || boundaryPins.length < 3}
+                  type="button"
+                >
+                  <Compass size={16} />
+                  <span>GENERATE SURVEY</span>
+                </button>
+                <button
+                  className="tool-btn action-btn"
+                  onClick={handleSavePlan}
+                  disabled={surveyPath.length === 0}
+                  type="button"
+                >
+                  <Download size={16} />
+                  <span>SAVE path.txt</span>
+                </button>
+              </div>
+
+              <div className="planner-simulation-deck" style={{ marginTop: '20px' }}>
+                <button
+                  className={`sim-action-btn ${isSimulating ? 'active' : ''}`}
+                  onClick={() => {
+                    if (surveyPath.length === 0) {
+                      triggerModal("⚠️ Simulation Notice", "Please generate a survey flight plan first.")
+                      return
+                    }
+                    setIsSimulating((current) => !current)
+                  }}
+                  type="button"
+                >
+                  {isSimulating ? <Pause size={18} /> : <Navigation size={18} />}
+                  <span>{isSimulating ? 'Pause Sim' : '▶ Simulate Flight Path'}</span>
+                </button>
+                
+                <button
+                  className="sim-action-btn secondary"
+                  onClick={() => {
+                    setIsSimulating(false)
+                    setSimulatedDronePos(null)
+                    setSimulatedGpsTrail([])
+                    setDroneStatus('idle')
+                  }}
+                  type="button"
+                >
+                  <Trash2 size={18} />
+                  <span>Reset Sim</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="planner-tables-container" style={{ marginTop: '20px' }}>
+              <div className="coord-table-card">
+                <h3>📌 Boundary Coordinates</h3>
+                <div className="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr><th>Point</th><th>Latitude</th><th>Longitude</th></tr>
+                    </thead>
+                    <tbody>
+                      {boundaryPins.map((pin, idx) => (
+                        <tr key={idx}>
+                          <td>#{idx + 1}</td>
+                          <td>{pin.lat.toFixed(6)}</td>
+                          <td>{pin.lng.toFixed(6)}</td>
+                        </tr>
+                      ))}
+                      {boundaryPins.length === 0 && (
+                        <tr><td colSpan={3} className="empty-row">No boundary points defined</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="coord-table-card">
+                <h3>🗺️ Waypoints (nav.txt)</h3>
+                <div className="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr><th>WPT</th><th>Latitude</th><th>Longitude</th></tr>
+                    </thead>
+                    <tbody>
+                      {surveyPath.map((pin, idx) => (
+                        <tr key={idx}>
+                          <td>{idx === 0 ? 'START' : idx === surveyPath.length - 1 ? 'RTH' : `#${idx}`}</td>
+                          <td>{pin.lat.toFixed(6)}</td>
+                          <td>{pin.lng.toFixed(6)}</td>
+                        </tr>
+                      ))}
+                      {surveyPath.length === 0 && (
+                        <tr><td colSpan={3} className="empty-row">No waypoints generated yet</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="planner-right-panel">
+            <div className="map-view-container">
+              <InteractiveMap
+                boundaryPins={boundaryPins}
+                setBoundaryPins={setBoundaryPins}
+                isMapClosed={isMapClosed}
+                homePos={homePos}
+                setHomePos={setHomePos}
+                mapMode={mapMode}
+                setMapMode={setMapMode}
+                surveyPath={surveyPath}
+                isSimulating={isSimulating}
+                simulatedDronePos={simulatedDronePos}
+                simulatedGpsTrail={simulatedGpsTrail}
+                setPlannedArea={setPlannedArea}
+                calculateAreaMeters={calculateAreaMeters}
+              />
+              <div className="preview-overlay">
+                <p className="eyebrow">Flight Map</p>
+                <h2>Quezon City sector overview</h2>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ==========================================
+          TAB 4: POLYCAM HUB WORKSPACE
+          ========================================== */}
+      {activeTab === 'polycam' && (
+        <section className="polycam-workspace">
+          <div className="polycam-left-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Hub</p>
+                <h1>Polycam 3D Capture Output</h1>
+              </div>
+            </div>
+
+            <div className="polycam-captures-list">
+              {polycamCaptures.map((capture, idx) => (
+                <div
+                  key={capture.id}
+                  className={selectedPolycamIndex === idx ? 'polycam-row active' : 'polycam-row'}
+                  onClick={() => setSelectedPolycamIndex(idx)}
+                >
+                  <div className="capture-info">
+                    <strong>{capture.name}</strong>
+                    <span>{capture.date} · {capture.device}</span>
+                  </div>
+                  <div className="capture-meta-pill">
+                    <span>{capture.points} pts</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="polycam-right-panel">
+            <div className="active-iframe-container">
+              {/* Responsive Polycam embedded 3D engine */}
+              <iframe
+                title="Polycam 3D Viewer"
+                src={`https://poly.cam/capture/${polycamCaptures[selectedPolycamIndex]?.id}/embed`}
+                className="polycam-iframe"
+                allowFullScreen
+              />
+              <div className="preview-overlay">
+                <p className="eyebrow">3D Engine Output</p>
+                <h2>{polycamCaptures[selectedPolycamIndex]?.name}</h2>
+              </div>
+            </div>
+
+            <div className="capture-telemetry-panel">
+              <div className="telemetry-title">🔬 Capture Diagnostics</div>
+              <div className="telemetry-grid">
+                <div>
+                  <small>Capture Points</small>
+                  <strong>{polycamCaptures[selectedPolycamIndex]?.points}</strong>
+                </div>
+                <div>
+                  <small>Mesh Size</small>
+                  <strong>{polycamCaptures[selectedPolycamIndex]?.size}</strong>
+                </div>
+                <div>
+                  <small>Images Captured</small>
+                  <strong>{polycamCaptures[selectedPolycamIndex]?.images} frames</strong>
+                </div>
+                <div>
+                  <small>Preset profile</small>
+                  <strong>{polycamCaptures[selectedPolycamIndex]?.quality}</strong>
+                </div>
+              </div>
+              <div className="diagnostic-actions" style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
+                <a
+                  className="primary-action secondary"
+                  href={`https://poly.cam/capture/${polycamCaptures[selectedPolycamIndex]?.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ textDecoration: 'none', display: 'inline-flex', justifyContent: 'center', width: '100%', alignItems: 'center' }}
+                >
+                  <Eye size={16} style={{ marginRight: '8px' }} />
+                  <span>Open Full View</span>
+                </a>
+                <button
+                  className="primary-action"
+                  type="button"
+                  onClick={() => triggerModal("📥 Sync File Downloads", `Diagnostic Assets Ready!\n\nExport links generated successfully for: ${polycamCaptures[selectedPolycamIndex]?.name}.\n- glTF mesh: 32MB\n- PLY point cloud: 41MB\n- CSV coordinates: 12MB`)}
+                  style={{ width: '100%' }}
+                >
+                  <Download size={16} style={{ marginRight: '8px' }} />
+                  <span>Download Assets</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* 🌟 PREMIUM CUSTOM GLASSMORPHIC DIALOG MODAL */}
+      {modalOpen && (
+        <div className="custom-scifi-modal-overlay" onClick={() => setModalOpen(false)}>
+          <div className="custom-scifi-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-row">
+                <Compass className="icon-pulse" size={18} />
+                <h3>{modalTitle}</h3>
+              </div>
+              <button className="modal-close-btn" onClick={() => setModalOpen(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <pre>{modalBody}</pre>
+            </div>
+            <div className="modal-footer">
+              <button className="modal-ack-btn" onClick={() => setModalOpen(false)}>CONFIRM SYSTEM ACK</button>
+            </div>
+          </div>
         </div>
-      </section>
+      )}
     </main>
   )
 }
