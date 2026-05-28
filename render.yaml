@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: visionaire-gateway
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm run server
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODEODM_URL
+        sync: false
