@@ -90,6 +90,7 @@
 .capture-panel,
 .conversion-panel,
 .reconstruction-panel,
+.webodm-panel,
 .job-panel {
   padding: 28px;
 }
@@ -199,6 +200,29 @@
   font-size: 13px;
   font-weight: 840;
   margin-bottom: 10px;
+}
+
+.reference-select {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.reference-select span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+}
+
+.reference-select select {
+  width: 100%;
+  min-height: 36px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: #ffffff;
 }
 
 .measurement-grid {
@@ -670,7 +694,8 @@ h2 {
   border-bottom: 1px solid var(--line);
 }
 
-.reconstruction-panel {
+.reconstruction-panel,
+.webodm-panel {
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -987,6 +1012,9 @@ h2 {
   }
 
   .workspace,
+  .drone-workspace,
+  .planner-workspace,
+  .polycam-workspace,
   .pipeline,
   .output-strip {
     grid-template-columns: 1fr;
@@ -995,9 +1023,18 @@ h2 {
   .capture-panel,
   .conversion-panel,
   .reconstruction-panel,
+  .webodm-panel,
+  .drone-left-panel,
+  .planner-left-panel,
+  .polycam-left-panel,
   .frames-strip {
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  .planner-left-panel {
+    height: auto;
+    max-height: none;
   }
 
   .control-grid,
@@ -1018,6 +1055,10 @@ h2 {
   .capture-panel,
   .conversion-panel,
   .reconstruction-panel,
+  .webodm-panel,
+  .drone-left-panel,
+  .planner-left-panel,
+  .polycam-left-panel,
   .job-panel {
     padding: 18px;
   }
