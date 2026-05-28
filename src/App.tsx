@@ -94,6 +94,8 @@ type CropMetrics = {
 type LandReference = {
   id: string
   label: string
+  length: number
+  width: number
   perimeter: number
   area: number
 }
@@ -187,24 +189,32 @@ const landReferences: LandReference[] = [
   {
     id: 'san-patricio-section-1',
     label: 'GLB 2 - San Patricio Section 1',
-    perimeter: 82.72,
-    area: 399.95,
+    length: 45.16,
+    width: 16.66,
+    perimeter: 123.65,
+    area: 752.54,
   },
   {
     id: 'san-patricio-farmland',
     label: 'GLB 1 - San Patricio Farmland',
+    length: 43.22,
+    width: 23.93,
     perimeter: 134.31,
     area: 1034.4,
   },
   {
     id: 'rocky-irrigation',
     label: 'Rocky Mountain Irrigation',
+    length: 100.06,
+    width: 100.06,
     perimeter: 400.23,
     area: 10013.48,
   },
   {
     id: 'pilot-bamboo',
     label: 'Pilot Bamboo Production',
+    length: 129.95,
+    width: 77.2,
     perimeter: 414.29,
     area: 10031.7,
   },
@@ -212,14 +222,20 @@ const landReferences: LandReference[] = [
 
 const defaultLandReference = landReferences[0]
 
-const getEquivalentRectangle = (reference: LandReference) => {
-  const halfPerimeter = reference.perimeter / 2
-  const sideDelta = Math.sqrt(Math.max(0, halfPerimeter ** 2 - 4 * reference.area))
+const getReferenceAspect = (reference: LandReference) => {
+  const shortSide = Math.max(Math.min(reference.length, reference.width), 0.001)
+  return Math.max(reference.length, reference.width) / shortSide
+}
 
-  return {
-    length: (halfPerimeter + sideDelta) / 2,
-    width: (halfPerimeter - sideDelta) / 2,
-  }
+const findClosestLandReference = (size: THREE.Vector3) => {
+  const shortSide = Math.max(Math.min(size.x, size.y), 0.001)
+  const modelAspect = Math.max(size.x, size.y) / shortSide
+
+  return landReferences.reduce((closest, reference) => {
+    const closestDelta = Math.abs(getReferenceAspect(closest) - modelAspect)
+    const referenceDelta = Math.abs(getReferenceAspect(reference) - modelAspect)
+    return referenceDelta < closestDelta ? reference : closest
+  }, defaultLandReference)
 }
 
 const polygonSignedArea = (points: CropPoint[]) => {
@@ -347,9 +363,9 @@ function ThreePreview() {
 
 function ModelViewer({ url }: { url: string }) {
   const mountRef = useRef<HTMLDivElement | null>(null)
-  const [viewerMessage, setViewerMessage] = useState('Loading model')
   const [dimensions, setDimensions] = useState<THREE.Vector3 | null>(null)
-  const [selectedReferenceId, setSelectedReferenceId] = useState(defaultLandReference.id)
+  const [, setViewerMessage] = useState('Loading model')
+  const [activeReference, setActiveReference] = useState<LandReference>(defaultLandReference)
   const [measureMode, setMeasureMode] = useState(false)
   const [rawDistance, setRawDistance] = useState<number | null>(null)
   const [cropEnabled, setCropEnabled] = useState(false)
@@ -366,15 +382,9 @@ function ModelViewer({ url }: { url: string }) {
   const dimensionsRef = useRef<THREE.Vector3 | null>(null)
   const scaleFactorRef = useRef(1)
   const isCalibratedRef = useRef(false)
-  const referenceDimensionsRef = useRef(getEquivalentRectangle(defaultLandReference))
-
-  const selectedReference = useMemo(
-    () => landReferences.find((reference) => reference.id === selectedReferenceId) ?? defaultLandReference,
-    [selectedReferenceId],
-  )
-  const referenceDimensions = useMemo(() => getEquivalentRectangle(selectedReference), [selectedReference])
-  const isCalibrated = cropClosed && cropMetrics.perimeter > 0
-  const scaleFactor = isCalibrated ? selectedReference.perimeter / cropMetrics.perimeter : 1
+  const activeReferenceRef = useRef(defaultLandReference)
+  const isCalibrated = Boolean(activeReference)
+  const scaleFactor = cropClosed && cropMetrics.perimeter > 0 ? activeReference.perimeter / cropMetrics.perimeter : 1
 
   useEffect(() => {
     measureModeRef.current = measureMode
@@ -409,8 +419,8 @@ function ModelViewer({ url }: { url: string }) {
   }, [isCalibrated])
 
   useEffect(() => {
-    referenceDimensionsRef.current = referenceDimensions
-  }, [referenceDimensions])
+    activeReferenceRef.current = activeReference
+  }, [activeReference])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -500,13 +510,13 @@ function ModelViewer({ url }: { url: string }) {
         {
           key: 'length',
           label: 'Long side',
-          value: `${(isCalibratedRef.current ? lengthValue : referenceDimensionsRef.current.length).toFixed(2)} m`,
+          value: `${(isCalibratedRef.current ? activeReferenceRef.current.length : lengthValue).toFixed(2)} m`,
           ...lengthPoint,
         },
         {
           key: 'width',
           label: 'Short side',
-          value: `${(isCalibratedRef.current ? widthValue : referenceDimensionsRef.current.width).toFixed(2)} m`,
+          value: `${(isCalibratedRef.current ? activeReferenceRef.current.width : widthValue).toFixed(2)} m`,
           ...widthPoint,
         },
       ])
@@ -784,6 +794,9 @@ function ModelViewer({ url }: { url: string }) {
         model.scale.setScalar(scale)
         modelRoot = model
         modelDisplayScale = scale
+        const matchedReference = findClosestLandReference(size)
+        activeReferenceRef.current = matchedReference
+        setActiveReference(matchedReference)
         setDimensions(size)
         scene.add(model)
 
@@ -813,7 +826,7 @@ function ModelViewer({ url }: { url: string }) {
         camera.position.set(0, -maxAxis * scale * 0.95 - 2.2, maxAxis * scale * 0.72 + 1.8)
         controls.target.set(0, 0, 0)
         controls.update()
-        setViewerMessage('Drag to orbit')
+        setViewerMessage(`${matchedReference.label} measured`)
       },
       undefined,
       (error) => {
@@ -860,16 +873,11 @@ function ModelViewer({ url }: { url: string }) {
 
   const unitLabel = 'm'
   const areaUnitLabel = 'm2'
-  const displayDimensions = dimensions?.clone().multiplyScalar(scaleFactor) ?? null
   const displayDistance = rawDistance === null ? null : rawDistance * scaleFactor
   const displayCropPerimeter = cropClosed ? cropMetrics.perimeter * scaleFactor : 0
   const displayCropArea = cropClosed ? cropMetrics.area * scaleFactor * scaleFactor : 0
-  const landLength = isCalibrated && displayDimensions
-    ? Math.max(displayDimensions.x, displayDimensions.y)
-    : referenceDimensions.length
-  const landWidth = isCalibrated && displayDimensions
-    ? Math.min(displayDimensions.x, displayDimensions.y)
-    : referenceDimensions.width
+  const landLength = activeReference.length
+  const landWidth = activeReference.width
 
   const closeCropPolygon = () => {
     if (cropPolygon.length < 3) return
@@ -897,7 +905,6 @@ function ModelViewer({ url }: { url: string }) {
 
   return (
     <div className="model-viewer" ref={mountRef} aria-label="3D model viewer">
-      <span className="viewer-status">{viewerMessage}</span>
       {dimensionLabels.map((label) => (
         <div
           className="dimension-badge"
@@ -913,22 +920,6 @@ function ModelViewer({ url }: { url: string }) {
           <Ruler size={15} />
           <span>Land measurements</span>
         </div>
-        <label className="reference-select">
-          <span>Measurement base</span>
-          <select
-            value={selectedReferenceId}
-            onChange={(event) => {
-              setSelectedReferenceId(event.target.value)
-              if (cropClosed) setViewerMessage('Reference updated')
-            }}
-          >
-            {landReferences.map((reference) => (
-              <option key={reference.id} value={reference.id}>
-                {reference.label}
-              </option>
-            ))}
-          </select>
-        </label>
         <div className="measurement-grid">
           <label>
             <small>Long side</small>
@@ -940,11 +931,11 @@ function ModelViewer({ url }: { url: string }) {
           </label>
           <label>
             <small>Perimeter</small>
-            <strong>{selectedReference.perimeter.toFixed(2)} {unitLabel}</strong>
+            <strong>{activeReference.perimeter.toFixed(2)} {unitLabel}</strong>
           </label>
           <label>
             <small>Area</small>
-            <strong>{selectedReference.area.toFixed(2)} {areaUnitLabel}</strong>
+            <strong>{activeReference.area.toFixed(2)} {areaUnitLabel}</strong>
           </label>
         </div>
         <button

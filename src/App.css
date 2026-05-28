@@ -202,29 +202,6 @@
   margin-bottom: 10px;
 }
 
-.reference-select {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-
-.reference-select span {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 780;
-}
-
-.reference-select select {
-  width: 100%;
-  min-height: 36px;
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0 10px;
-  color: var(--ink);
-  background: #ffffff;
-}
-
 .measurement-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -257,6 +234,7 @@
 }
 
 .measure-button {
+  display: none;
   width: 100%;
   min-height: 36px;
   margin: 10px 0 8px;
@@ -315,6 +293,7 @@
 }
 
 .crop-tools {
+  display: none;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
