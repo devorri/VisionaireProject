@@ -2114,12 +2114,12 @@ function App() {
           className={activeTab === 'polycam' ? 'tab-btn active' : 'tab-btn'}
           onClick={() => {
             setActiveTab('polycam')
-            triggerModal("🔬 Polycam 3D Capture Hub", "Loaded 6 interactive 3D site captures from database. Native GLB and point-cloud metrics online.")
+            triggerModal("🔬 3D Hub", "Loaded 6 interactive 3D site captures from database. Native GLB and point-cloud metrics online.")
           }}
           type="button"
         >
           <Box size={16} />
-          <span>Polycam 3D Hub</span>
+          <span>3D Hub</span>
         </button>
       </nav>
 
@@ -2857,7 +2857,7 @@ function App() {
   )}
 
       {/* ==========================================
-          TAB 4: POLYCAM HUB WORKSPACE
+          TAB 4: 3D HUB WORKSPACE
           ========================================== */}
       {activeTab === 'polycam' && (
     <section className="polycam-workspace">
@@ -2865,7 +2865,7 @@ function App() {
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Hub</p>
-            <h1>Polycam 3D Capture Output</h1>
+            <h1>3D Hub Output</h1>
           </div>
         </div>
 
@@ -2890,9 +2890,9 @@ function App() {
 
       <div className="polycam-right-panel">
         <div className="active-iframe-container">
-          {/* Responsive Polycam embedded 3D engine */}
+          {/* Responsive embedded 3D engine */}
           <iframe
-            title="Polycam 3D Viewer"
+            title="3D Viewer"
             src={`https://poly.cam/capture/${polycamCaptures[selectedPolycamIndex]?.id}/embed`}
             className="polycam-iframe"
             allowFullScreen
