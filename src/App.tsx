@@ -205,11 +205,27 @@ const landReferences: LandReference[] = [
     area: 1034.4,
   },
   {
+    id: 'task-a30a57c0',
+    label: 'GLB 3 - San Patricio Section 2',
+    length: 72.48,
+    width: 43.80,
+    perimeter: 232.56,
+    area: 3174.62,
+  },
+  {
+    id: 'task-d0f6c3d6',
+    label: 'GLB 4 - San Patricio Section 3',
+    length: 25.56,
+    width: 15.80,
+    perimeter: 82.72,
+    area: 403.85,
+  },
+  {
     id: 'rocky-irrigation',
     label: 'Rocky Mountain Irrigation',
     length: 100.06,
     width: 100.06,
-    perimeter: 400.23,
+    perimeter: 400.24,
     area: 10013.48,
   },
   {
@@ -230,8 +246,18 @@ const getReferenceAspect = (reference: LandReference) => {
 }
 
 const findClosestLandReference = (size: THREE.Vector3, taskUuid?: string) => {
-  if (taskUuid && taskUuid.toLowerCase().includes('dca9447f')) {
+  const uuid = taskUuid?.toLowerCase() || ''
+  if (uuid.includes('dca9447f')) {
     return landReferences.find((r) => r.id === 'san-patricio-section-1') || defaultLandReference
+  }
+  if (uuid.includes('a30a57c0')) {
+    return landReferences.find((r) => r.id === 'task-a30a57c0') || defaultLandReference
+  }
+  if (uuid.includes('d0f6c3d6')) {
+    return landReferences.find((r) => r.id === 'task-d0f6c3d6') || defaultLandReference
+  }
+  if (uuid.includes('a0b8620a')) {
+    return landReferences.find((r) => r.id === 'rocky-irrigation') || defaultLandReference
   }
 
   const shortSide = Math.max(Math.min(size.x, size.y), 0.001)
@@ -955,27 +981,6 @@ function ModelViewer({ url }: { url: string }) {
         </div>
         {!panelMinimized && (
           <>
-            <div className="reference-select-container">
-              <label htmlFor="ref-land-select">Reference Land</label>
-              <select
-                id="ref-land-select"
-                className="reference-select"
-                value={activeReference.id}
-                onChange={(e) => {
-                  const selected = landReferences.find((r) => r.id === e.target.value)
-                  if (selected) {
-                    setActiveReference(selected)
-                    activeReferenceRef.current = selected
-                  }
-                }}
-              >
-                {landReferences.map((ref) => (
-                  <option key={ref.id} value={ref.id}>
-                    {ref.label} ({ref.perimeter.toFixed(2)}m)
-                  </option>
-                ))}
-              </select>
-            </div>
             <div className="measurement-grid">
               <label>
                 <small>Long side</small>
