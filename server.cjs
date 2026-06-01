@@ -32,18 +32,71 @@ app.get('/api/health', async (_req, res) => {
 })
 
 app.get('/api/nodeodm/tasks', async (_req, res) => {
+  let odmTasks = []
   try {
-    const response = await axios.get(`${NODEODM_URL}/task/list`, { timeout: 10000 })
-    res.json(response.data)
+    const response = await axios.get(`${NODEODM_URL}/task/list`, { timeout: 5000 })
+    odmTasks = Array.isArray(response.data) ? response.data : []
   } catch (error) {
-    res.status(502).json({ error: 'Could not list NodeODM tasks' })
+    console.log('Could not fetch active tasks from NodeODM, using local cache only')
   }
+
+  // Scan outputs folder for completed tasks on disk
+  const localTasks = []
+  try {
+    const outputsDir = path.join(__dirname, 'outputs')
+    if (await fs.pathExists(outputsDir)) {
+      const dirs = await fs.readdir(outputsDir)
+      for (const dirName of dirs) {
+        const modelPath = path.join(outputsDir, dirName, 'odm_textured_model_geo.glb')
+        if (await fs.pathExists(modelPath)) {
+          localTasks.push({
+            uuid: dirName,
+            name: `Local Cache Model (${dirName.substring(0, 8)})`,
+            status: { code: 2, message: "Completed" },
+            progress: 100
+          })
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error scanning local outputs directory:', err)
+  }
+
+  // Merge lists, prioritizing NodeODM tasks if they exist
+  const taskMap = new Map()
+  for (const task of localTasks) {
+    taskMap.set(task.uuid, task)
+  }
+  for (const task of odmTasks) {
+    if (task && task.uuid) {
+      taskMap.set(task.uuid, task)
+    }
+  }
+
+  res.json(Array.from(taskMap.values()))
 })
 
 app.get('/api/nodeodm/task/:uuid/info', async (req, res) => {
+  const { uuid } = req.params
+  
+  // Check if the model is already cached locally on disk FIRST
+  const modelPath = path.join(__dirname, 'outputs', uuid, 'odm_textured_model_geo.glb')
+  if (await fs.pathExists(modelPath)) {
+    const stat = await fs.stat(modelPath)
+    return res.json({
+      uuid: uuid,
+      name: `Completed Model (${uuid.substring(0, 8)})`,
+      status: { code: 40 },
+      progress: 100,
+      imagesCount: 0,
+      dateCreated: stat.mtime.toISOString(),
+    })
+  }
+
+  // Otherwise try calling NodeODM for active/in-progress tasks
   try {
-    const response = await axios.get(`${NODEODM_URL}/task/${req.params.uuid}/info`, { timeout: 10000 })
-    res.json(response.data)
+    const response = await axios.get(`${NODEODM_URL}/task/${uuid}/info`, { timeout: 5000 })
+    return res.json(response.data)
   } catch (error) {
     res.status(502).json({ error: 'Could not read NodeODM task info' })
   }
